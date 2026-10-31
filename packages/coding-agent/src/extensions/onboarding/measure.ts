@@ -24,5 +24,9 @@ export async function runProbe(
 			].join("\n")
 		: `Pi could not measure the model (${outcome.error}). You can try again later with /probe.`;
 	const choice = await ctx.ui.select(text, ["Continue"]);
-	return choice === undefined ? undefined : { type: "probed" };
+	if (choice === undefined) return undefined;
+	return {
+		type: "probed",
+		recommendedLevel: outcome.ok ? outcome.result.placement.recommendations.carefulLevel : undefined,
+	};
 }

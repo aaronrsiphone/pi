@@ -2,7 +2,7 @@
  * A probe run in plain words: the class, each range, and the recommended settings.
  */
 
-import { levelInfo } from "../permissions/levels.ts";
+import { levelInfo } from "../careful/levels.ts";
 import { CLASS_DESCRIPTIONS, DIMENSION_NAMES, type Dimension } from "./ranges.ts";
 import type { SuiteResult } from "./suite.ts";
 

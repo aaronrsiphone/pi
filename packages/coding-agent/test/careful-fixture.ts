@@ -1,5 +1,5 @@
-// A fake extension API and context for the permissions extension: tool calls, prompts, and session
-// entries without an agent session. test/suite/permissions.test.ts covers a real session.
+// A fake extension API and context for the careful extension: tool calls, prompts, and session
+// entries without an agent session. test/suite/careful.test.ts covers a real session.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
@@ -9,15 +9,15 @@ import type {
 	ToolCallEvent,
 	ToolCallEventResult,
 } from "../src/core/extensions/index.ts";
-import { createPermissionsExtension } from "../src/extensions/permissions/index.ts";
-import type { PermissionMode } from "../src/extensions/permissions/levels.ts";
+import { createCarefulExtension } from "../src/extensions/careful/index.ts";
+import type { CarefulLevel } from "../src/extensions/careful/levels.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
 
 export interface Fixture {
 	root: string;
-	stateDir: string;
+	dir: string;
 	ctx: ExtensionContext;
 	select: ReturnType<typeof vi.fn>;
 	notify: ReturnType<typeof vi.fn>;
@@ -34,32 +34,33 @@ export interface Fixture {
 	command(name: string, args: string): Promise<void>;
 	startSession(sessionId?: string): Promise<void>;
 	emit(event: string, payload?: unknown): Promise<unknown>;
-	emitBus(channel: string): void;
+	emitBus(channel: string, data?: unknown): void;
+	/** Payloads sent on the event bus, by channel. */
+	sent: Map<string, unknown[]>;
 }
 
 export interface FixtureOptions {
 	base: string;
-	mode?: PermissionMode;
+	level?: CarefulLevel;
 	flag?: string;
 	hasUI?: boolean;
-	trusted?: boolean;
 	sessionId?: string;
 	root?: string;
 }
 
 let callId = 0;
 
-/** Load the permissions extension into a fake API rooted at `<base>/project`. */
-export function setupPermissions(options: FixtureOptions): Fixture {
+/** Load the careful extension into a fake API rooted at `<base>/project`. */
+export function setupCareful(options: FixtureOptions): Fixture {
 	const root = options.root ?? join(options.base, "project");
-	const home = join(options.base, "home");
-	const stateDir = join(home, ".pi", "agent", "permissions");
+	const dir = join(options.base, "home", ".pi", "agent", "careful");
 	mkdirSync(join(root, "src"), { recursive: true });
-	mkdirSync(stateDir, { recursive: true });
-	if (options.mode !== undefined) writeFileSync(join(stateDir, "config.json"), JSON.stringify({ mode: options.mode }));
+	mkdirSync(dir, { recursive: true });
+	if (options.level !== undefined) writeFileSync(join(dir, "config.json"), JSON.stringify({ level: options.level }));
 
 	const handlers = new Map<string, Handler[]>();
 	const bus = new Map<string, ((data: unknown) => void)[]>();
+	const sent = new Map<string, unknown[]>();
 	const commands = new Map<string, CommandHandler>();
 	const entries: Fixture["entries"] = [];
 	const answers: string[] = [];
@@ -85,28 +86,20 @@ export function setupPermissions(options: FixtureOptions): Fixture {
 		setActiveTools(names: string[]) {
 			activeTools = names.filter((name) => registeredTools.includes(name));
 		},
-		getAllTools: () =>
-			registeredTools.map((name) => ({
-				name,
-				annotations:
-					name === "mcp_read"
-						? { readOnlyHint: true }
-						: name === "mcp_delete"
-							? { destructiveHint: true }
-							: undefined,
-			})),
+		getAllTools: () => registeredTools.map((name) => ({ name })),
 		events: {
 			on(channel: string, handler: (data: unknown) => void) {
 				bus.set(channel, [...(bus.get(channel) ?? []), handler]);
 				return () => undefined;
 			},
 			emit(channel: string, data: unknown) {
+				sent.set(channel, [...(sent.get(channel) ?? []), data]);
 				for (const handler of bus.get(channel) ?? []) handler(data);
 			},
 		},
 	} as unknown as ExtensionAPI;
 
-	createPermissionsExtension(api, { stateDir, home, tempDirs: [join(options.base, "tmp")] });
+	createCarefulExtension(api, { dir });
 
 	const select = vi.fn(async (title: string, opts: string[]) => {
 		prompts.push({ title, options: opts });
@@ -131,7 +124,6 @@ export function setupPermissions(options: FixtureOptions): Fixture {
 			getSessionFile: () => undefined,
 			getBranch: () => entries.filter((e) => e.session === sessionId),
 		},
-		isProjectTrusted: () => options.trusted ?? false,
 	} as unknown as ExtensionContext;
 
 	const emit = async (event: string, payload: unknown = { type: event }) => {
@@ -142,7 +134,8 @@ export function setupPermissions(options: FixtureOptions): Fixture {
 
 	return {
 		root,
-		stateDir,
+		dir,
+		sent,
 		ctx,
 		select,
 		notify,
@@ -169,8 +162,8 @@ export function setupPermissions(options: FixtureOptions): Fixture {
 			await emit("session_start");
 		},
 		emit,
-		emitBus(channel) {
-			api.events.emit(channel, undefined);
+		emitBus(channel, data) {
+			api.events.emit(channel, data);
 		},
 	};
 }

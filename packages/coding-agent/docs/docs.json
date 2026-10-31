@@ -40,12 +40,20 @@
               "path": "security.md"
             },
             {
+              "title": "Get Started Step by Step",
+              "path": "guided-setup.md"
+            },
+            {
               "title": "Choose How Careful Pi Is",
               "path": "careful-levels.md"
             },
             {
               "title": "Know What Your Model Can Do",
               "path": "model-capability.md"
+            },
+            {
+              "title": "Benchmark Pi on Your Own Work",
+              "path": "benchmarks.md"
             },
             {
               "title": "Isolate Pi",

@@ -4,6 +4,17 @@ Pi cannot tell you which model is "good". It can measure the connected model on 
 
 The suite takes about a minute on a typical local model and sends about 20 requests. For a model that charges per token, Pi shows the estimated cost and asks first. Results are saved per model in `~/.pi/agent/capability/`, with the last 10 runs.
 
+## What to expect
+
+`/expectations` shows a card for the connected model:
+
+- its class and its range on each probe
+- what it did well on the probes and on your own [benchmarks](benchmarks.md)
+- where to double-check its work
+- the recommended careful level and thinking effort, next to the current ones
+
+Pi builds the card from the latest probe and benchmark results each time it is shown, and adds it to the chat after every probe. It is shown to you and never sent to the model.
+
 ## What Pi measures
 
 Pi checks every answer in its own code. The model never grades itself.
@@ -49,6 +60,8 @@ New users still start at level 2 or lower; the recommendation applies when they 
 
 ## Limits
 
-A one-minute suite tells a weak model from a capable one. It cannot tell a Sonnet-class model from an Opus-class model: both usually pass every probe. Benchmarks you build from tasks you know the answers to show the difference on your own work.
+A one-minute suite tells a weak model from a capable one. It cannot tell a Sonnet-class model from an Opus-class model: both usually pass every probe. [Benchmarks](benchmarks.md) you build from tasks you know the answers to show the difference on your own work.
 
 The suite version is saved with each result. When the probes or boundaries change, the version changes and older results are not compared with new ones.
+
+To turn probes and the card off, add `"-builtin:capability"` to `extensions` in [settings](settings.md#resources).

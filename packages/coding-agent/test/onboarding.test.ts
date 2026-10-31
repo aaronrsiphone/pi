@@ -7,15 +7,16 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "../src/core/extensions/index.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
+import { BENCHMARK_FINISHED_EVENT } from "../src/extensions/benchmark/events.ts";
+import type { RunRecord } from "../src/extensions/benchmark/store.ts";
 import type { SuiteOutcome, SuiteResult } from "../src/extensions/capability/index.ts";
 import { place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
-import { saveResult } from "../src/extensions/capability/store.ts";
+import { CAREFUL_CHANGED_EVENT, CAREFUL_SET_EVENT, levelInfo } from "../src/extensions/careful/levels.ts";
+import { moveUpSuggestion } from "../src/extensions/onboarding/benchmark.ts";
 import { checkConnection, listModels, mergeProvider, normalizeBaseUrl } from "../src/extensions/onboarding/endpoint.ts";
 import { advance, INITIAL_STATE, type OnboardingState, parseState } from "../src/extensions/onboarding/flow.ts";
 import { createOnboardingExtension } from "../src/extensions/onboarding/index.ts";
 import { loadState } from "../src/extensions/onboarding/state.ts";
-import { MODE_CHANGED_EVENT, savedMode } from "../src/extensions/permissions/index.ts";
-import { levelInfo } from "../src/extensions/permissions/levels.ts";
 
 let base: string;
 
@@ -38,6 +39,9 @@ describe("flow", () => {
 			{ type: "answered-experience", experienced: false },
 			{ type: "chose-level" },
 			{ type: "practiced" },
+			{ type: "benchmark-started" },
+			{ type: "benchmark-done" },
+			{ type: "saw-expectations" },
 			{ type: "suggested-task" },
 		] as const;
 		let state = INITIAL_STATE;
@@ -46,18 +50,36 @@ describe("flow", () => {
 			state = advance(state, event, 1);
 			seen.push(state.step);
 		}
-		expect(seen).toEqual(["connect", "probe", "experience", "levels", "practice", "first-task", "done"]);
+		expect(seen).toEqual([
+			"connect",
+			"probe",
+			"experience",
+			"levels",
+			"practice",
+			"benchmark",
+			"waiting-for-benchmark",
+			"expectations",
+			"first-task",
+			"done",
+		]);
 		expect(state.connectedModel).toBe("p/m");
 	});
 
-	it("gives experienced users the short path", () => {
+	it("keeps the probe's recommended level", () => {
+		const state = run({ type: "connected", model: "p/m" }, { type: "probed", recommendedLevel: 1 });
+		expect(state.recommendedLevel).toBe(1);
+		expect(parseState(JSON.parse(JSON.stringify(state))).recommendedLevel).toBe(1);
+	});
+
+	it("gives experienced users the short path, with the benchmark optional", () => {
 		const state = run(
 			{ type: "connected", model: "p/m" },
 			{ type: "probed" },
 			{ type: "answered-experience", experienced: true },
 			{ type: "chose-level" },
 		);
-		expect(state.step).toBe("done");
+		expect(state.step).toBe("benchmark");
+		expect(advance(advance(state, { type: "benchmark-done" }, 1), { type: "saw-expectations" }, 1).step).toBe("done");
 	});
 
 	it("waits for /login and continues when it connects", () => {
@@ -151,14 +173,13 @@ describe("onboarding extension", () => {
 		await h.startSession();
 		await h.idle();
 		expect(loadState(h.dir).step).toBe("done");
-		expect(savedMode(h.permissionsDir)).toBe(3);
-		expect(h.busEvents).toEqual([MODE_CHANGED_EVENT]);
+		expect(h.levelRequests).toEqual([3]);
 		expect(h.prompts[1]).toContain("Here is what pi measured");
 		// The probe found a chat-only model, so level 1 is recommended instead of the usual 2.
 		expect(h.select.mock.calls[3][1]).toContain("1. Only what I share (recommended to start)");
 		expect(h.prompts[3]).toContain("Start at level 1");
 		expect(h.prompts[4]).toContain("Practice");
-		expect(h.prompts[4]).toContain("deletes results/old-run.csv");
+		expect(h.prompts[4]).toContain("Pi wants to run a command\n\nrm results/old-run.csv");
 		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(3).example);
 	});
 
@@ -177,8 +198,47 @@ describe("onboarding extension", () => {
 		await h.startSession();
 		await h.idle();
 		expect(loadState(h.dir).step).toBe("done");
-		expect(savedMode(h.permissionsDir)).toBe(4);
-		expect(h.notify.mock.calls.at(-1)?.[0]).toContain("/permissions");
+		expect(h.levelRequests).toEqual([4]);
+		expect(h.notify.mock.calls.at(-1)?.[0]).toContain("/probe (measure the model)");
+	});
+
+	it("skips the level steps when careful levels are turned off", async () => {
+		const h = setup({ model: fakeModel, careful: false });
+		h.answers.push("Use this model", "No, this is new", "Put the example");
+		await h.startSession();
+		await h.idle();
+		expect(loadState(h.dir).step).toBe("done");
+		expect(h.levelRequests).toEqual([]);
+		expect(h.prompts[2]).toContain("A good first task is:");
+		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(4).example);
+	});
+
+	it("runs the first benchmark through /bench, waits for it, then shows the expectations card", async () => {
+		const h = setup({ model: fakeModel, commands: ["careful", "bench", "expectations"] });
+		h.answers.push("Use this model", "No, this is new", "2.", "No", "Continue", "Run the example");
+		await h.startSession();
+		await h.idle();
+		expect(h.sent).toEqual(["/bench run example:lab-data"]);
+		expect(loadState(h.dir).step).toBe("waiting-for-benchmark");
+
+		h.answers.push("Put the example");
+		h.emitBus(BENCHMARK_FINISHED_EVENT, { ladderName: "x", runs: [], stopped: false });
+		await h.idle();
+		expect(h.sent).toEqual(["/bench run example:lab-data", "/expectations"]);
+		expect(loadState(h.dir).step).toBe("done");
+	});
+
+	it("suggests the next level when every benchmark task at the current level passed", () => {
+		const passed = { level: 2, outcome: "pass" } as RunRecord;
+		const event = (runs: RunRecord[]) => ({ ladderName: "x", runs, stopped: false });
+		expect(moveUpSuggestion(event([passed, { ...passed, level: 1 }]), 2)).toContain(
+			"/careful 3 (Ask before changing)",
+		);
+		expect(moveUpSuggestion(event([passed, { ...passed, outcome: "partial" }]), 2)).toBeUndefined();
+		expect(moveUpSuggestion(event([{ ...passed, level: 3 }]), 2)).toBeUndefined();
+		expect(moveUpSuggestion(event([{ ...passed, level: 3 }]), 3)).toContain("backup");
+		expect(moveUpSuggestion(event([{ ...passed, level: 4 }]), 4)).toBeUndefined();
+		expect(moveUpSuggestion(event([passed]), undefined)).toBeUndefined();
 	});
 
 	it("pauses on Escape and resumes where it stopped", async () => {
@@ -277,17 +337,26 @@ function serve(handler: Parameters<typeof createServer>[1]): Promise<Server> {
 	});
 }
 
-function setup(options: { model?: Model<Api>; mode?: "tui" | "print"; measured?: "chat-only" | "error" }) {
+function setup(options: {
+	model?: Model<Api>;
+	mode?: "tui" | "print";
+	measured?: "chat-only" | "error";
+	careful?: boolean;
+	/** Commands of other extensions that are on. Defaults to careful only. */
+	commands?: string[];
+}) {
 	const dir = join(base, "onboarding");
-	const capabilityDir = join(base, "capability");
-	const permissionsDir = join(base, "permissions");
 	const modelsPath = join(base, "models.json");
 	const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
 	const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
 	const answers: string[] = [];
 	const inputs: string[] = [];
 	const prompts: string[] = [];
-	const busEvents: string[] = [];
+	const levelRequests: number[] = [];
+	const bus = new Map<string, ((data: unknown) => void)[]>();
+	const commandNames = options.commands ?? (options.careful === false ? [] : ["careful"]);
+	const careful = commandNames.includes("careful");
+	const sent: string[] = [];
 	let model = options.model;
 	const registered: Model<Api>[] = [];
 
@@ -302,18 +371,34 @@ function setup(options: { model?: Model<Api>; mode?: "tui" | "print"; measured?:
 		registerCommand(name: string, command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) {
 			commands.set(name, command.handler);
 		},
-		getCommands: () => [{ name: "careful" }],
+		getCommands: () => commandNames.map((name) => ({ name })),
+		sendUserMessage: (text: string) => sent.push(text),
 		setModel,
-		events: { emit: (channel: string) => busEvents.push(channel), on: () => () => undefined },
+		events: {
+			on(channel: string, handler: (data: unknown) => void) {
+				bus.set(channel, [...(bus.get(channel) ?? []), handler]);
+				return () => undefined;
+			},
+			emit(channel: string, data: unknown) {
+				for (const handler of bus.get(channel) ?? []) handler(data);
+			},
+		},
 	} as unknown as ExtensionAPI;
 	const measure = async (): Promise<SuiteOutcome | undefined> => {
 		if (options.measured === undefined) return undefined;
 		if (options.measured === "error") return { ok: false, error: "timeout" };
-		const result = chatOnlyResult();
-		saveResult(capabilityDir, result);
-		return { ok: true, result };
+		return { ok: true, result: chatOnlyResult() };
 	};
-	createOnboardingExtension(api, { dir, permissionsStateDir: permissionsDir, modelsPath, capabilityDir, measure });
+	createOnboardingExtension(api, { dir, modelsPath, measure });
+	// Stands in for the careful extension: it applies a requested level and reports it.
+	if (careful) {
+		api.events.on(CAREFUL_SET_EVENT, (data) => {
+			const { level } = data as { level: number };
+			levelRequests.push(level);
+			api.events.emit(CAREFUL_CHANGED_EVENT, { level });
+		});
+		api.events.emit(CAREFUL_CHANGED_EVENT, { level: 2 });
+	}
 
 	const select = vi.fn(async (title: string, opts: string[]) => {
 		prompts.push(title);
@@ -356,12 +441,13 @@ function setup(options: { model?: Model<Api>; mode?: "tui" | "print"; measured?:
 	};
 	return {
 		dir,
-		permissionsDir,
 		modelsPath,
 		answers,
 		inputs,
 		prompts,
-		busEvents,
+		levelRequests,
+		sent,
+		emitBus: (channel: string, data: unknown) => api.events.emit(channel, data),
 		select,
 		notify,
 		setEditorText,

@@ -1,18 +1,28 @@
 /**
  * Capability probes: measure the connected model in about a minute and place it in ranges.
  *
- * `/probe` runs the suite on the current model; onboarding runs it right after connecting. Results
- * are saved per model (store.ts) for the expectations card and for comparing runs.
+ * `/probe` runs the suite on the current model; `/expectations` shows what to expect from it.
+ * Results are saved per model (store.ts). The card is built when it is shown, from the latest probe
+ * and benchmark results, and shown after every probe. Works on its own; the careful and benchmark
+ * extensions add the current level and benchmark results over the event bus when they are on.
  */
 
+import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
-import { defaultCapabilityDir, saveResult } from "./store.ts";
+import { CAREFUL_CHANGED_EVENT, type CarefulChangedEvent, type CarefulLevel } from "../careful/levels.ts";
+import {
+	buildCard,
+	EXPECTATIONS_COLLECT_EVENT,
+	type ExpectationsCollectEvent,
+	type ExpectationsSection,
+} from "./expectations.ts";
+import { defaultCapabilityDir, loadResults, saveResult } from "./store.ts";
 import { estimateCost, runSuite, SUITE_STEPS, type SuiteOutcome } from "./suite.ts";
-import { describeResult } from "./summary.ts";
 
 export type { SuiteOutcome, SuiteResult } from "./suite.ts";
 
 const WIDGET_KEY = "capability";
+const CARD_ENTRY = "capability:expectations";
 
 /**
  * Measure the current model, showing progress, and save the result. Asks first when the model
@@ -51,8 +61,42 @@ export async function measureModel(
 	}
 }
 
-/** Register `/probe`. */
+/** Register `/probe`, `/expectations`, and the card's renderer. */
 export function createCapabilityExtension(pi: ExtensionAPI, options: { dir?: string } = {}): void {
+	const dir = options.dir ?? defaultCapabilityDir();
+	// The level the careful extension last reported; undefined while it is turned off.
+	let level: CarefulLevel | undefined;
+
+	pi.events.on(CAREFUL_CHANGED_EVENT, (data) => {
+		level = (data as CarefulChangedEvent).level;
+	});
+
+	pi.registerEntryRenderer(CARD_ENTRY, (entry, _options, theme) => {
+		const sections = (entry.data as { sections: ExpectationsSection[] }).sections;
+		const text = sections.map((s) => `${theme.bold(theme.fg("accent", s.title))}\n${s.lines.join("\n")}`);
+		return new Text(text.join("\n\n"), 1, 0);
+	});
+
+	/** Add the card for the current model to the chat. It is shown to the user, never sent to the model. */
+	function showCard(ctx: ExtensionContext): void {
+		const model = ctx.model;
+		if (!model) {
+			ctx.ui.notify("No model is connected. Run /onboarding or /login first.", "warning");
+			return;
+		}
+		const key = `${model.provider}/${model.id}`;
+		const collect: ExpectationsCollectEvent = { model: key, sections: [] };
+		pi.events.emit(EXPECTATIONS_COLLECT_EVENT, collect);
+		const sections = buildCard({
+			modelName: model.name || model.id,
+			result: loadResults(dir, key)[0],
+			sections: collect.sections,
+			currentLevel: level,
+			currentEffort: pi.getThinkingLevel(),
+		});
+		pi.appendEntry(CARD_ENTRY, { sections });
+	}
+
 	pi.registerCommand("probe", {
 		description: "Measure what the connected model can do (about a minute) and recommend settings",
 		handler: async (_args, ctx) => {
@@ -60,14 +104,19 @@ export function createCapabilityExtension(pi: ExtensionAPI, options: { dir?: str
 				ctx.ui.notify("No model is connected. Run /onboarding or /login first.", "warning");
 				return;
 			}
-			const outcome = await measureModel(ctx, pi, options.dir);
+			const outcome = await measureModel(ctx, pi, dir);
 			if (!outcome) return;
 			if (!outcome.ok) {
 				ctx.ui.notify(`Could not measure the model: ${outcome.error}`, "error");
 				return;
 			}
-			ctx.ui.notify(describeResult(outcome.result).join("\n"), "info");
+			showCard(ctx);
 		},
+	});
+
+	pi.registerCommand("expectations", {
+		description: "What to expect from the connected model: its class, where to check its work, and settings",
+		handler: async (_args, ctx) => showCard(ctx),
 	});
 }
 

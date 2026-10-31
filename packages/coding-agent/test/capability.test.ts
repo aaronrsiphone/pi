@@ -14,6 +14,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ProbeClient } from "../src/extensions/capability/client.ts";
+import { buildCard } from "../src/extensions/capability/expectations.ts";
 import { probeMultiStep } from "../src/extensions/capability/multistep.ts";
 import { buildHaystack, probeRetrieval, probeToolCalls } from "../src/extensions/capability/probes.ts";
 import { type Measurements, place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
@@ -274,5 +275,60 @@ describe("results", () => {
 		expect(text).toContain(
 			"Recommended: careful level 3 (Ask before changing), larger changes across several files, thinking effort medium.",
 		);
+	});
+});
+
+describe("expectations card", () => {
+	const measurements: Measurements = {
+		contextWindow: 128_000,
+		speed: { firstTokenMs: 400, tokensPerSecond: 60 },
+		tools: { passed: 3, total: 3, notes: [] },
+		instructions: { passed: 2, total: 3, notes: [] },
+		retrieval: { passed: 2, total: 2, notes: [], approxTokens: 8000 },
+		multiStep: { passed: 1, total: 3, notes: [], toolCalls: 2 },
+	};
+	const basic: SuiteResult = {
+		suiteVersion: SUITE_VERSION,
+		model: "p/m",
+		modelName: "Model",
+		thinkingLevel: "medium",
+		at: 0,
+		durationMs: 1000,
+		measurements,
+		placement: place(measurements, true),
+	};
+	const text = (sections: ReturnType<typeof buildCard>) =>
+		sections.map((s) => `${s.title}\n${s.lines.join("\n")}`).join("\n\n");
+
+	it("shows the class, what went well, where to check, and recommended against current settings", () => {
+		const card = text(
+			buildCard({
+				modelName: "Model",
+				result: basic,
+				sections: [{ title: "Your benchmarks", lines: ["3 of 4 task(s) passed"] }],
+				currentLevel: 3,
+				currentEffort: "high",
+			}),
+		);
+		expect(card).toContain("What to expect from Model: Basic");
+		expect(card).toContain("Did well: speed, context, using tools, finding facts in long text.");
+		expect(card).toContain("Your benchmarks\n3 of 4 task(s) passed");
+		expect(card).toContain("  - every file it changed");
+		expect(card).toContain("Careful level: now 3 Ask before changing, recommended 2 Look, don't touch.");
+		expect(card).toContain("Thinking effort: now high, recommended medium.");
+	});
+
+	it("asks for a probe when the model was not measured, and works without careful levels", () => {
+		const card = text(
+			buildCard({
+				modelName: "Model",
+				result: undefined,
+				sections: [],
+				currentLevel: undefined,
+				currentEffort: "off",
+			}),
+		);
+		expect(card).toContain("Not measured yet. Run /probe");
+		expect(card).toContain("Careful level: now careful levels off.");
 	});
 });

@@ -10,7 +10,7 @@
  * benchmark does that.
  */
 
-import type { CarefulLevel } from "../permissions/levels.ts";
+import type { CarefulLevel } from "../careful/levels.ts";
 import type { MultiStepResult } from "./multistep.ts";
 import type { RetrievalResult, ScoreResult, SpeedResult } from "./probes.ts";
 

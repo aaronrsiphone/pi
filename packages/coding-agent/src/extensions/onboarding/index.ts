@@ -1,19 +1,31 @@
 /**
- * Guided onboarding: connect a model, measure it, then learn the careful levels and try a first task.
+ * Guided onboarding: connect a model, measure it, learn the careful levels, run a first benchmark,
+ * see what to expect, and try a first task. Afterwards it suggests moving up a level when the
+ * benchmark tasks at the current level pass.
  *
- * Pi drives every step in code (flow.ts); the model only answers the connection check and the
- * capability probes, which pi grades. Setup starts once on the first interactive start, can be
- * paused with Escape, resumes where it stopped, and runs again with /onboarding. One answer
- * ("I have used an agent") takes the short path.
+ * Pi drives every step in code (flow.ts); the model only answers the connection check, the
+ * capability probes, and the benchmark tasks, which pi or the user grade. Setup starts once on the
+ * first interactive start, can be paused with Escape, resumes where it stopped, and runs again with
+ * /onboarding. One answer ("I have used an agent") takes the short path.
+ *
+ * Onboarding only guides; the careful, capability, and benchmark extensions do the work and run
+ * without it. A step whose extension is turned off is skipped. Onboarding reaches them only through
+ * their commands and event-bus channels, never their files.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModelsPath } from "../../config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
+import { BENCHMARK_FINISHED_EVENT, type BenchmarkFinishedEvent } from "../benchmark/events.ts";
 import { measureModel, type SuiteOutcome } from "../capability/index.ts";
-import { defaultCapabilityDir, loadResults } from "../capability/store.ts";
-import { MODE_CHANGED_EVENT, savedMode, saveMode } from "../permissions/index.ts";
-import { DEFAULT_MODE } from "../permissions/levels.ts";
+import {
+	CAREFUL_CHANGED_EVENT,
+	CAREFUL_SET_EVENT,
+	type CarefulChangedEvent,
+	type CarefulLevel,
+	type CarefulSetEvent,
+} from "../careful/levels.ts";
+import { moveUpSuggestion, runBenchmarkStep, runExpectationsStep, runWaitingForBenchmark } from "./benchmark.ts";
 import { runConnect, runWaitingForLogin } from "./connect.ts";
 import { advance, type FlowEvent, isFinished, type OnboardingState } from "./flow.ts";
 import { runProbe } from "./measure.ts";
@@ -23,8 +35,6 @@ import { runExperience, runFirstTask, runLevels, runPractice } from "./walkthrou
 export interface OnboardingOptions {
 	/** Where progress is saved. Defaults to ~/.pi/agent/onboarding. */
 	dir?: string;
-	/** The permissions extension's state directory, for saving the chosen level. */
-	permissionsStateDir?: string;
 	/** models.json for endpoints added during setup. */
 	modelsPath?: string;
 	/** Where probe results are saved. Defaults to ~/.pi/agent/capability. */
@@ -37,6 +47,32 @@ export interface OnboardingOptions {
 export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingOptions = {}): void {
 	const dir = options.dir ?? defaultOnboardingDir();
 	let running: Promise<void> | undefined;
+	// The level the careful extension last reported; undefined while it is turned off.
+	let level: CarefulLevel | undefined;
+
+	let sessionCtx: ExtensionContext | undefined;
+
+	pi.events.on(CAREFUL_CHANGED_EVENT, (data) => {
+		level = (data as CarefulChangedEvent).level;
+	});
+
+	pi.events.on(BENCHMARK_FINISHED_EVENT, (data) => {
+		const ctx = sessionCtx;
+		if (!ctx?.hasUI) return;
+		const state = loadState(dir);
+		if (state.experienced !== true) {
+			const suggestion = moveUpSuggestion(data as BenchmarkFinishedEvent, level);
+			if (suggestion) ctx.ui.notify(suggestion, "info");
+		}
+		if (state.step === "waiting-for-benchmark") {
+			saveState(dir, advance(state, { type: "benchmark-done" }, Date.now()));
+			void run(ctx);
+		}
+	});
+
+	const hasCommand = (name: string) => pi.getCommands().some((c) => c.name === name);
+	// Commands of other extensions are started the way a user types them.
+	const startCommand = (text: string) => pi.sendUserMessage(text, { expandPromptTemplates: true });
 
 	function run(ctx: ExtensionContext): Promise<void> {
 		running ??= runSteps(ctx).finally(() => {
@@ -55,8 +91,8 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 			}
 			state = advance(state, event, Date.now());
 			saveState(dir, state);
-			// /login runs in pi's own screen; model_select brings the flow back.
-			if (state.step === "waiting-for-login") return;
+			// /login and /bench run in their own screens; model_select and benchmark:finished bring the flow back.
+			if (state.step === "waiting-for-login" || state.step === "waiting-for-benchmark") return;
 		}
 	}
 
@@ -65,32 +101,36 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 			modelsPath: options.modelsPath ?? getModelsPath(),
 			setModel: (model: Model<Api>) => pi.setModel(model),
 		};
-		const currentMode = () => savedMode(options.permissionsStateDir) ?? DEFAULT_MODE;
+		const carefulOn = hasCommand("careful");
 		switch (state.step) {
 			case "connect":
 				return runConnect(ctx, connectDeps);
 			case "waiting-for-login":
 				return runWaitingForLogin(ctx, connectDeps);
 			case "probe":
+				if (!options.measure && !hasCommand("probe")) return Promise.resolve({ type: "probed" });
 				return runProbe(ctx, options.measure ?? ((c) => measureModel(c, pi, options.capabilityDir)));
 			case "experience":
 				return runExperience(ctx);
 			case "levels":
+				if (!carefulOn) return Promise.resolve({ type: "chose-level" });
 				return runLevels(ctx, state.experienced ?? false, {
-					levelsAvailable: pi.getCommands().some((c) => c.name === "careful"),
-					chooseMode: (mode) => {
-						saveMode(mode, options.permissionsStateDir);
-						pi.events.emit(MODE_CHANGED_EVENT, undefined);
-					},
-					modelLevel: state.connectedModel
-						? loadResults(options.capabilityDir ?? defaultCapabilityDir(), state.connectedModel)[0]?.placement
-								.recommendations.carefulLevel
-						: undefined,
+					chooseLevel: (chosen) => pi.events.emit(CAREFUL_SET_EVENT, { level: chosen } satisfies CarefulSetEvent),
+					modelLevel: state.recommendedLevel,
 				});
 			case "practice":
-				return runPractice(ctx);
+				return carefulOn ? runPractice(ctx) : Promise.resolve({ type: "practiced" });
+			case "benchmark":
+				if (!hasCommand("bench")) return Promise.resolve({ type: "benchmark-done" });
+				return runBenchmarkStep(ctx, state.experienced ?? false, (args) => startCommand(`/bench ${args}`));
+			case "waiting-for-benchmark":
+				if (!hasCommand("bench")) return Promise.resolve({ type: "benchmark-done" });
+				return runWaitingForBenchmark(ctx, (args) => startCommand(`/bench ${args}`));
+			case "expectations":
+				if (!hasCommand("expectations")) return Promise.resolve({ type: "saw-expectations" });
+				return Promise.resolve(runExpectationsStep(ctx, () => startCommand("/expectations")));
 			case "first-task":
-				return runFirstTask(ctx, currentMode());
+				return runFirstTask(ctx, level);
 			case "done":
 			case "skipped":
 				return Promise.resolve(undefined);
@@ -98,11 +138,16 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		sessionCtx = ctx;
 		if (event.reason !== "startup" || ctx.mode !== "tui" || !ctx.hasUI) return;
 		const state = loadState(dir);
 		if (isFinished(state) || state.step === "waiting-for-login") return;
 		// Not awaited: startup finishes while the first dialog waits for the user.
 		void run(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		sessionCtx = undefined;
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -111,7 +156,8 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 	});
 
 	pi.registerCommand("onboarding", {
-		description: "Set up pi step by step: connect a model, pick how careful it should be (restart, skip)",
+		description:
+			"Set up pi step by step: connect a model, measure it, pick how careful it should be, try a benchmark",
 		getArgumentCompletions: (prefix) =>
 			["restart", "skip"].filter((c) => c.startsWith(prefix)).map((c) => ({ value: c, label: c })),
 		handler: async (args, ctx) => {

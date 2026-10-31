@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPermissionsExtension } from "../../src/extensions/permissions/index.ts";
-import type { PermissionMode } from "../../src/extensions/permissions/levels.ts";
+import { createCarefulExtension } from "../../src/extensions/careful/index.ts";
+import type { CarefulLevel } from "../../src/extensions/careful/levels.ts";
 import { createHarness, createTestUiContext, getToolResult, type Harness } from "./harness.ts";
 
 describe("careful levels in a real agent session", () => {
@@ -16,18 +16,11 @@ describe("careful levels in a real agent session", () => {
 		while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 	});
 
-	async function start(mode: PermissionMode, select: (title: string, options: string[]) => string | undefined) {
-		const base = mkdtempSync(join(tmpdir(), "permissions-suite-"));
-		dirs.push(base);
-		const stateDir = join(base, "state");
-		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(join(stateDir, "config.json"), JSON.stringify({ mode }));
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) =>
-					createPermissionsExtension(pi, { stateDir, home: join(base, "home"), tempDirs: [join(base, "tmp")] }),
-			],
-		});
+	async function start(level: CarefulLevel, select: (title: string, options: string[]) => string | undefined) {
+		const dir = mkdtempSync(join(tmpdir(), "careful-suite-"));
+		dirs.push(dir);
+		writeFileSync(join(dir, "config.json"), JSON.stringify({ level }));
+		const harness = await createHarness({ extensionFactories: [(pi) => createCarefulExtension(pi, { dir })] });
 		harnesses.push(harness);
 		await harness.session.bindExtensions({
 			uiContext: createTestUiContext({ select: async (title, options) => select(title, options) }),
