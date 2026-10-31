@@ -58,8 +58,8 @@ const strongModel: FauxResponseFactory = (context) => {
 	const text = lastUserText(context);
 	if (getCurrentTools(context.messages).some((t) => t.name === "convert_units")) {
 		if (text.includes("psi to kPa")) return toolUse("convert_units", { value: 30, from: "psi", to: "kPa" });
-		if (text.includes("run_07")) return toolUse("read_file", { path: "data/run_07.csv" });
-		return toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" });
+		if (text.includes("Plot")) return toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" });
+		return toolUse("read_file", { path: "data/run_07.csv" });
 	}
 	if (text.includes("Switch its pressure settings")) {
 		const step = [
@@ -193,9 +193,23 @@ describe("suite", () => {
 		expect(placement.ranges.tools).toMatchObject({ tier: "low", label: "Unreliable", detail: "0 of 3" });
 	});
 
-	it("stops when the model cannot be reached", async () => {
-		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "401 Unauthorized" })]);
-		expect(await runSuite(client(), () => undefined)).toEqual({ ok: false, error: "401 Unauthorized" });
+	it("stops without scoring when the server keeps failing", { timeout: 20_000 }, async () => {
+		const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
+		faux.setResponses([failure, failure, failure]);
+		const outcome = await runSuite(client(), () => undefined);
+		expect(outcome).toMatchObject({ ok: false });
+		if (!outcome.ok) expect(outcome.error).toContain("server kept failing (503 overloaded)");
+	});
+
+	// Calibration on hosted models: an overloaded server once cost a model a point and its class.
+	it("retries a server failure instead of scoring the model down", { timeout: 20_000 }, async () => {
+		faux.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" }),
+			toolUse("convert_units", { value: 30, from: "psi", to: "kPa" }),
+			toolUse("read_file", { path: "data/run_07.csv" }),
+			toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" }),
+		]);
+		expect(await probeToolCalls(client())).toEqual({ passed: 3, total: 3, notes: [] });
 	});
 
 	it("reports progress for every step", async () => {

@@ -17,7 +17,7 @@ import { createLsToolDefinition } from "../../core/tools/ls.ts";
 import { createReadToolDefinition } from "../../core/tools/read.ts";
 import { wrapToolDefinitions } from "../../core/tools/tool-definition-wrapper.ts";
 import { createWriteToolDefinition } from "../../core/tools/write.ts";
-import type { ProbeClient } from "./client.ts";
+import { type ProbeClient, withRetries } from "./client.ts";
 import type { ScoreResult } from "./probes.ts";
 
 export interface MultiStepResult extends ScoreResult {
@@ -42,16 +42,29 @@ const TASK =
 const MAX_TURNS = 12;
 const TIMEOUT_MS = 180_000;
 
-/** Run the task and score three checks: the right edit, nothing else touched, and a read back. */
+/**
+ * Run the task and score three checks: the right edit, nothing else touched, and a read back.
+ * A provider failure mid-task restarts it in a fresh folder; when it persists, `ProviderUnavailableError`.
+ */
 export async function probeMultiStep(client: ProbeClient): Promise<MultiStepResult> {
+	const attempt = await withRetries(
+		() => attemptTask(client),
+		(a) => a.providerError,
+	);
+	return attempt.result;
+}
+
+async function attemptTask(
+	client: ProbeClient,
+): Promise<{ result: MultiStepResult; providerError: string | undefined }> {
 	const dir = mkdtempSync(join(tmpdir(), "pi-probe-"));
 	try {
 		for (const [path, content] of Object.entries(FILES)) {
 			mkdirSync(dirname(join(dir, path)), { recursive: true });
 			writeFileSync(join(dir, path), content);
 		}
-		const { calls, error } = await runTask(client, dir);
-		return { ...score(dir, calls, error), toolCalls: calls.length };
+		const { calls, stopped, providerError } = await runTask(client, dir);
+		return { result: { ...score(dir, calls, stopped), toolCalls: calls.length }, providerError };
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -63,7 +76,15 @@ interface Call {
 	path: string | undefined;
 }
 
-async function runTask(client: ProbeClient, dir: string): Promise<{ calls: Call[]; error: string | undefined }> {
+interface TaskRun {
+	calls: Call[];
+	/** Why pi stopped the model: too many turns or too long. A model failure, scored as such. */
+	stopped: string | undefined;
+	/** Why the provider failed. Not the model's fault, so the task is run again. */
+	providerError: string | undefined;
+}
+
+async function runTask(client: ProbeClient, dir: string): Promise<TaskRun> {
 	const definitions = [
 		createLsToolDefinition(dir),
 		createReadToolDefinition(dir),
@@ -89,6 +110,7 @@ async function runTask(client: ProbeClient, dir: string): Promise<{ calls: Call[
 	const calls: Call[] = [];
 	const started = new Map<string, unknown>();
 	let turns = 0;
+	let stopped: string | undefined;
 	agent.subscribe((event) => {
 		if (event.type === "tool_execution_start") {
 			started.set(event.toolCallId, event.args);
@@ -96,26 +118,32 @@ async function runTask(client: ProbeClient, dir: string): Promise<{ calls: Call[
 			const path = (started.get(event.toolCallId) as { path?: unknown } | undefined)?.path;
 			calls.push({ tool: event.toolName, path: typeof path === "string" ? resolve(dir, path) : undefined });
 		} else if (event.type === "turn_end" && ++turns >= MAX_TURNS) {
+			stopped = `stopped after ${MAX_TURNS} turns`;
 			agent.abort();
 		}
 	});
-	const timer = setTimeout(() => agent.abort(), TIMEOUT_MS);
+	const timer = setTimeout(() => {
+		stopped = `stopped after ${TIMEOUT_MS / 1000} s`;
+		agent.abort();
+	}, TIMEOUT_MS);
+	let providerError: string | undefined;
 	try {
 		await agent.prompt(TASK);
 		await agent.waitForIdle();
+		providerError = stopped ? undefined : agent.state.errorMessage;
 	} catch (error) {
-		return { calls, error: error instanceof Error ? error.message : String(error) };
+		providerError = error instanceof Error ? error.message : String(error);
 	} finally {
 		clearTimeout(timer);
 	}
-	return { calls, error: agent.state.errorMessage };
+	return { calls, stopped, providerError };
 }
 
-function score(dir: string, calls: Call[], error: string | undefined): ScoreResult {
+function score(dir: string, calls: Call[], stopped: string | undefined): ScoreResult {
 	const settingsPath = join(dir, "config/settings.txt");
 	const settings = readFileSync(settingsPath, "utf-8");
 	const notes: string[] = [];
-	if (error) notes.push(`stopped early: ${error}`);
+	if (stopped) notes.push(`stopped early: ${stopped}`);
 	const changed =
 		/^pressure_units\s*=\s*kPa\s*$/im.test(settings) &&
 		/^threshold\s*=\s*275\.8\s*$/m.test(settings) &&

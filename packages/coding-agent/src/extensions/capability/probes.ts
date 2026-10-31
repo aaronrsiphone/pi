@@ -5,8 +5,8 @@
  * itself. The multi-step probe, which needs an agent loop, is in multistep.ts.
  */
 
-import { type Context, type Tool, Type, validateToolArguments } from "@earendil-works/pi-ai";
-import { ask, type ProbeClient, replyError } from "./client.ts";
+import { type Context, type Message, type Tool, Type, validateToolArguments } from "@earendil-works/pi-ai";
+import { ask, type ProbeClient } from "./client.ts";
 
 /** Measured speed; undefined values mean the model streamed nothing to measure. */
 export interface SpeedResult {
@@ -30,9 +30,8 @@ export async function probeSpeed(client: ProbeClient): Promise<SpeedResult & { e
 		userOnly("Count from 1 to 60. Write the numbers separated by single spaces and nothing else."),
 		TIMEOUT_MS,
 	);
-	const error = replyError(reply);
-	if (error || reply.firstTokenMs === undefined) {
-		return { firstTokenMs: undefined, tokensPerSecond: undefined, error: error ?? "the model sent no answer" };
+	if (reply.firstTokenMs === undefined) {
+		return { firstTokenMs: undefined, tokensPerSecond: undefined, error: "the model sent no answer" };
 	}
 	const streamingSeconds = (reply.totalMs - reply.firstTokenMs) / 1000;
 	return {
@@ -65,6 +64,8 @@ interface ToolCase {
 	prompt: string;
 	tool: string;
 	check(args: Record<string, unknown>): boolean;
+	/** Earlier turns the request continues from, so the right next step is unambiguous. */
+	loadedFile?: { path: string; content: string };
 }
 
 const lower = (value: unknown) => String(value).toLowerCase();
@@ -81,7 +82,10 @@ const TOOL_CASES: ToolCase[] = [
 		check: (a) => String(a.path).replace(/^\.\//, "") === "data/run_07.csv",
 	},
 	{
+		// The file was opened in an earlier turn, so reading it again is a mistake, not caution.
+		// Calibration showed that without it, reading the data first is a fair answer.
 		prompt: "Plot temperature against time, titled 'Run 7'.",
+		loadedFile: { path: "data/run_07.csv", content: "time_s,temperature_c\n0,20.1\n60,22.8\n120,25.0\n" },
 		tool: "plot",
 		check: (a) =>
 			lower(a.x_column).includes("time") && lower(a.y_column).includes("temp") && String(a.title).includes("Run 7"),
@@ -96,23 +100,56 @@ export async function probeToolCalls(client: ProbeClient): Promise<ScoreResult> 
 			client,
 			{
 				systemPrompt: "You are a lab assistant. Use the tools to act on requests.",
-				messages: [{ role: "user", content: c.prompt, timestamp: 0 }],
+				messages: [
+					...(c.loadedFile ? fileOpened(client, c.loadedFile) : []),
+					{ role: "user", content: c.prompt, timestamp: 0 },
+				],
 				tools: TOOLS,
 			},
 			TIMEOUT_MS,
 		);
 		const calls = reply.message.content.filter((p) => p.type === "toolCall");
 		const call = calls[0];
-		const failure =
-			replyError(reply) ??
-			(!call
-				? "answered in text instead of calling a tool"
-				: call.name !== c.tool
-					? `called ${call.name} instead of ${c.tool}`
-					: argumentsProblem(call, c));
+		const failure = !call
+			? "answered in text instead of calling a tool"
+			: call.name !== c.tool
+				? `called ${call.name} instead of ${c.tool}`
+				: argumentsProblem(call, c);
 		if (failure) notes.push(`"${c.prompt}": ${failure}`);
 	}
 	return { passed: TOOL_CASES.length - notes.length, total: TOOL_CASES.length, notes };
+}
+
+/** Earlier turns in which the user asked for a file and the model opened it with read_file. */
+function fileOpened(client: ProbeClient, file: { path: string; content: string }): Message[] {
+	return [
+		{ role: "user", content: `Open the file ${file.path}.`, timestamp: 0 },
+		{
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call_open", name: "read_file", arguments: { path: file.path } }],
+			api: client.model.api,
+			provider: client.model.provider,
+			model: client.model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 0,
+		},
+		{
+			role: "toolResult",
+			toolCallId: "call_open",
+			toolName: "read_file",
+			content: [{ type: "text", text: file.content }],
+			isError: false,
+			timestamp: 0,
+		},
+	];
 }
 
 function argumentsProblem(call: Parameters<typeof validateToolArguments>[1], c: ToolCase): string | undefined {
@@ -163,7 +200,7 @@ export async function probeInstructions(client: ProbeClient): Promise<ScoreResul
 	const notes: string[] = [];
 	for (const c of FORMAT_CASES) {
 		const reply = await ask(client, userOnly(c.prompt), TIMEOUT_MS);
-		const failure = replyError(reply) ?? c.check(reply.text);
+		const failure = c.check(reply.text);
 		if (failure) notes.push(`format ${FORMAT_CASES.indexOf(c) + 1}: ${failure}`);
 	}
 	return { passed: FORMAT_CASES.length - notes.length, total: FORMAT_CASES.length, notes };
@@ -187,14 +224,10 @@ export async function probeRetrieval(client: ProbeClient, contextWindow: number)
 		),
 		TIMEOUT_MS * 2,
 	);
-	const error = replyError(reply);
 	const notes: string[] = [];
-	if (error) notes.push(error);
-	else {
-		if (!reply.text.includes("4197")) notes.push("did not find the calibration code for B7");
-		if (!/\b41\b/.test(reply.text)) notes.push("did not find the cabinet of the spare gauge");
-	}
-	return { passed: error ? 0 : 2 - notes.length, total: 2, notes, approxTokens };
+	if (!reply.text.includes("4197")) notes.push("did not find the calibration code for B7");
+	if (!/\b41\b/.test(reply.text)) notes.push("did not find the cabinet of the spare gauge");
+	return { passed: 2 - notes.length, total: 2, notes, approxTokens };
 }
 
 /**

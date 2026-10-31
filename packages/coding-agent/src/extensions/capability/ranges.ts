@@ -5,9 +5,9 @@
  * Boundaries and their sources are documented in docs/model-capability.md. In short: single tool
  * calls and format following are nearly solved for capable models, so they mainly flag weak
  * models; autonomous multi-step work separates the classes most. The internal mapping is roughly
- * chat-only and basic for small local models, capable for Haiku-class, strong for Sonnet- and
- * Opus-class. A one-minute suite cannot tell Sonnet-class from Opus-class; the user's own
- * benchmark does that.
+ * chat-only and basic for small local models, capable for weaker Haiku-class models, strong for
+ * Haiku-class and above: calibration on current small hosted models placed almost all of them in
+ * strong. The suite cannot rank good models against each other; the user's own benchmark does that.
  */
 
 import type { CarefulLevel } from "../careful/levels.ts";
@@ -15,7 +15,7 @@ import type { MultiStepResult } from "./multistep.ts";
 import type { RetrievalResult, ScoreResult, SpeedResult } from "./probes.ts";
 
 /** Bump when probes or boundaries change, so results from different suites are never compared. */
-export const SUITE_VERSION = 1;
+export const SUITE_VERSION = 2;
 
 export interface Measurements {
 	/** Declared by provider metadata or models.json; pi cannot tell a default from a real value. */

@@ -5,7 +5,7 @@
  * runs keep timings comparable between models.
  */
 
-import type { ProbeClient } from "./client.ts";
+import { type ProbeClient, ProviderUnavailableError } from "./client.ts";
 import { probeMultiStep } from "./multistep.ts";
 import { probeInstructions, probeRetrieval, probeSpeed, probeToolCalls } from "./probes.ts";
 import { type Measurements, type Placement, place, SUITE_VERSION } from "./ranges.ts";
@@ -33,8 +33,20 @@ export const SUITE_STEPS = [
 	"A small multi-step task",
 ] as const;
 
-/** Run the suite. Stops early only when the model cannot be reached at all. */
+/** Run the suite. Stops early only when the model or its server cannot be reached reliably. */
 export async function runSuite(client: ProbeClient, onStep: (index: number) => void): Promise<SuiteOutcome> {
+	try {
+		return await measure(client, onStep);
+	} catch (error) {
+		if (!(error instanceof ProviderUnavailableError)) throw error;
+		return {
+			ok: false,
+			error: `the model's server kept failing (${error.message}). Nothing was scored; try /probe again later`,
+		};
+	}
+}
+
+async function measure(client: ProbeClient, onStep: (index: number) => void): Promise<SuiteOutcome> {
 	const started = Date.now();
 	onStep(0);
 	const { error, ...speed } = await probeSpeed(client);

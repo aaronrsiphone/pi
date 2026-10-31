@@ -4,6 +4,10 @@
  * Every probe goes through `ask()`, so time to first token, duration, and token counts are measured
  * the same way everywhere. Requests use temperature 0 so re-runs on the same model give the same
  * answers wherever the provider honors it.
+ *
+ * A provider failure (overloaded, timed out, rate limited) says nothing about the model, so it is
+ * retried, and if it persists the whole suite stops with `ProviderUnavailableError` instead of
+ * scoring the model down. Calibration runs on hosted models showed such failures flipping verdicts.
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -27,8 +31,38 @@ export interface Reply {
 	inputTokens: number;
 }
 
-/** Send one request and measure it. Never rejects: provider failures come back as an error message. */
+/** The provider kept failing, so the model could not be measured. */
+export class ProviderUnavailableError extends Error {}
+
+// Three attempts with 2 s and 4 s pauses ride out a busy provider without stretching the suite much.
+const ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000;
+
+/** Send one request and measure it, retrying provider failures. Throws `ProviderUnavailableError` when they persist. */
 export async function ask(client: ProbeClient, context: Context, timeoutMs: number): Promise<Reply> {
+	// A stalled request is usually a busy server; three stalls in a row are reported as such.
+	const failure = (reply: Reply) =>
+		reply.message.stopReason === "aborted" ? `no answer within ${timeoutMs / 1000} s` : replyError(reply);
+	return withRetries(() => askOnce(client, context, timeoutMs), failure);
+}
+
+/** Run `attempt` until `failure` reports nothing, pausing longer each time; throw after the last attempt. */
+export async function withRetries<T>(
+	attempt: () => Promise<T>,
+	failure: (result: T) => string | undefined,
+): Promise<T> {
+	let error = "";
+	for (let i = 0; i < ATTEMPTS; i++) {
+		if (i > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * 2 ** (i - 1)));
+		const result = await attempt();
+		const problem = failure(result);
+		if (problem === undefined) return result;
+		error = problem;
+	}
+	throw new ProviderUnavailableError(error);
+}
+
+async function askOnce(client: ProbeClient, context: Context, timeoutMs: number): Promise<Reply> {
 	const started = performance.now();
 	let firstTokenMs: number | undefined;
 	const stream = client.registry.streamSimple(client.model, context, {
@@ -61,7 +95,7 @@ export async function ask(client: ProbeClient, context: Context, timeoutMs: numb
 }
 
 /** Why a reply failed at the provider, or undefined when it arrived. */
-export function replyError(reply: Reply): string | undefined {
+function replyError(reply: Reply): string | undefined {
 	const { stopReason, errorMessage } = reply.message;
-	return stopReason === "error" || stopReason === "aborted" ? (errorMessage ?? stopReason) : undefined;
+	return stopReason === "error" ? (errorMessage ?? stopReason) : undefined;
 }

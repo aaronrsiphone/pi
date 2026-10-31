@@ -47,7 +47,7 @@ The multi-step probe uses Pi's own read, list, edit, and write tools and its sys
 | Chat only | Using tools: 1 or fewer | Small local models | 1 Only what I share | One question about the files you share |
 | Basic | Below Capable | Small and mid-size local models | 2 Look, don't touch | One file at a time |
 | Capable | Multi-step 2 or more, tools 2 or more, instructions 2 or more | Haiku-class | 3 Ask before changing | Small multi-step tasks |
-| Strong | Every probe passed | Sonnet- and Opus-class | 3 Ask before changing | Larger changes across several files |
+| Strong | Every probe passed | Haiku-class and above, including many small hosted models (see [Calibration](#calibration)) | 3 Ask before changing | Larger changes across several files |
 
 New users still start at level 2 or lower; the recommendation applies when they move up. Thinking effort starts at medium, or low for slow models, because more thinking makes a slow model much slower. Pi lists where to double-check its work from the probes it failed, and always includes numbers, units, and calculations.
 
@@ -58,9 +58,22 @@ New users still start at level 2 or lower; the recommendation applies when they 
 - **Tools and format.** Simple tool calls and format following are close to solved for capable models, while small models score far lower on function-calling benchmarks ([BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html)) and somewhat lower on format following ([IFEval comparisons](https://arxiv.org/pdf/2410.12049)). These probes therefore mainly flag weak models.
 - **Multi-step work separates the classes most.** On Terminal-Bench 2.0, Haiku 4.5, Sonnet 4.6, and Opus 4.6 scored 41%, 59%, and 65% ([comparison](https://www.morphllm.com/comparisons/claude-haiku-vs-sonnet-vs-opus)), a much wider spread than on code generation. The overall class therefore depends most on the multi-step task.
 
+## Calibration
+
+In October 2026 the suite ran three times at thinking effort medium on seven small and fast models through OpenRouter: `google/gemini-3.8-flash`, `qwen/qwen3.8-flash`, `z-ai/glm-5.3-flash`, `qwen/qwen3.8-27b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, and `nvidia/nemotron-3-super-120b-a12b`.
+
+- **Most current small models pass every probe.** Of 21 runs, 15 placed the model in Strong. Five of the other six missed only the plot request (see below); after that fix, every completed run of the tool probe on all seven models scored 3 of 3. The suite separates weak models from capable ones, not one good model from another.
+- **One real flip.** `glm-5.3-flash` missed both facts in one of three runs, which placed it in Capable for that run. A model at the edge of a range can still move between runs.
+- **Speed and time.** Measured speed ranged from 21 to 550 tokens/s. A suite run took 14 to 90 seconds, and 8 minutes once on a free, overloaded endpoint.
+
+What the runs changed, in suite version 2:
+
+- **Provider failures no longer count against the model.** In the first round, two of the three class changes between runs came from the provider (a timeout and "overloaded"). Pi now retries such failures and, if they persist, reports that the server kept failing instead of scoring the model.
+- **The plot request is unambiguous.** It asked to plot "the loaded table" with no table loaded, and naming the file instead made models open it first. Both are sensible answers. The request now follows a turn in which the file was already opened, so reading it again is a mistake.
+
 ## Limits
 
-A one-minute suite tells a weak model from a capable one. It cannot tell a Sonnet-class model from an Opus-class model: both usually pass every probe. [Benchmarks](benchmarks.md) you build from tasks you know the answers to show the difference on your own work.
+A one-minute suite tells a weak model from a capable one. Most current models pass every probe, so it cannot tell a small hosted model from a Sonnet- or Opus-class model. [Benchmarks](benchmarks.md) you build from tasks you know the answers to show the difference on your own work.
 
 The suite version is saved with each result. When the probes or boundaries change, the version changes and older results are not compared with new ones.
 
