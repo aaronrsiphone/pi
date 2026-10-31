@@ -40,6 +40,10 @@
               "path": "security.md"
             },
             {
+              "title": "Choose How Careful Pi Is",
+              "path": "careful-levels.md"
+            },
+            {
               "title": "Isolate Pi",
               "path": "containerization.md"
             },
