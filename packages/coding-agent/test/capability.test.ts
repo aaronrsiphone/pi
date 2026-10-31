@@ -1,0 +1,278 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { JsonObject } from "@earendil-works/pi-ai";
+import {
+	type FauxProviderRegistration,
+	type FauxResponseFactory,
+	fauxAssistantMessage,
+	fauxToolCall,
+	getCurrentTools,
+	registerFauxProvider,
+	streamSimple,
+} from "@earendil-works/pi-ai/compat";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ModelRegistry } from "../src/core/model-registry.ts";
+import type { ProbeClient } from "../src/extensions/capability/client.ts";
+import { probeMultiStep } from "../src/extensions/capability/multistep.ts";
+import { buildHaystack, probeRetrieval, probeToolCalls } from "../src/extensions/capability/probes.ts";
+import { type Measurements, place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
+import { loadResults, saveResult } from "../src/extensions/capability/store.ts";
+import { estimateCost, runSuite, type SuiteResult } from "../src/extensions/capability/suite.ts";
+import { describeResult } from "../src/extensions/capability/summary.ts";
+
+let faux: FauxProviderRegistration;
+let base: string;
+
+beforeEach(() => {
+	faux = registerFauxProvider();
+	base = mkdtempSync(join(tmpdir(), "capability-"));
+});
+
+afterEach(() => {
+	faux.unregister();
+	rmSync(base, { recursive: true, force: true });
+});
+
+function client(contextWindow = 200_000): ProbeClient {
+	return {
+		model: { ...faux.getModel(), contextWindow, reasoning: true },
+		thinkingLevel: "off",
+		// The faux provider is reached through pi-ai's dispatcher, as a real provider would be.
+		registry: { streamSimple } as unknown as ModelRegistry,
+	};
+}
+
+/** Last user prompt text in a request, to script answers per probe. */
+const lastUserText = (context: Parameters<FauxResponseFactory>[0]): string => {
+	const user = context.messages.filter((m) => m.role === "user").at(-1);
+	return typeof user?.content === "string" ? user.content : JSON.stringify(user?.content ?? "");
+};
+
+const countToolResults = (context: Parameters<FauxResponseFactory>[0]) =>
+	context.messages.filter((m) => m.role === "toolResult").length;
+
+/** A model that answers every probe correctly. */
+const strongModel: FauxResponseFactory = (context) => {
+	const text = lastUserText(context);
+	if (getCurrentTools(context.messages).some((t) => t.name === "convert_units")) {
+		if (text.includes("psi to kPa")) return toolUse("convert_units", { value: 30, from: "psi", to: "kPa" });
+		if (text.includes("run_07")) return toolUse("read_file", { path: "data/run_07.csv" });
+		return toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" });
+	}
+	if (text.includes("Switch its pressure settings")) {
+		const step = [
+			() => toolUse("ls", { path: "config" }),
+			() => toolUse("read", { path: "config/settings.txt" }),
+			() =>
+				toolUse("edit", {
+					path: "config/settings.txt",
+					edits: [
+						{
+							oldText: "pressure_units = psi\nthreshold = 40",
+							newText: "pressure_units = kPa\nthreshold = 275.8",
+						},
+					],
+				}),
+			() => toolUse("read", { path: "config/settings.txt" }),
+			() => fauxAssistantMessage("Done: units are kPa and the threshold is 275.8."),
+		][countToolResults(context)];
+		return step();
+	}
+	if (text.includes("Count from 1 to 60"))
+		return fauxAssistantMessage(Array.from({ length: 60 }, (_, i) => i + 1).join(" "));
+	if (text.includes("JSON object")) return fauxAssistantMessage('{"sample_rate": 48000, "channels": 2}');
+	if (text.includes("three lines")) return fauxAssistantMessage("- Check seals\n- Check gauge\n- Check relief valve");
+	if (text.includes("YES or NO")) return fauxAssistantMessage("NO");
+	if (text.includes("calibration code for sensor B7")) return fauxAssistantMessage("1. 4197\n2. Cabinet 41");
+	return fauxAssistantMessage("OK");
+};
+
+/** A small model: chats fine, answers tool requests in text, and does not finish the task. */
+const weakModel: FauxResponseFactory = (context) => {
+	const text = lastUserText(context);
+	if (text.includes("Count from 1 to 60")) return fauxAssistantMessage("1 2 3 4 5 6 7 8 9 10");
+	if (getCurrentTools(context.messages).some((t) => t.name === "convert_units")) {
+		return fauxAssistantMessage("30 psi is about 206.8 kPa.");
+	}
+	if (text.includes("JSON object")) return fauxAssistantMessage('Sure! ```json\n{"sample_rate": 48}\n```');
+	if (text.includes("calibration code")) return fauxAssistantMessage("1. 5521\n2. Cabinet 12");
+	return fauxAssistantMessage("I would edit the settings file to use kPa.");
+};
+
+function toolUse(name: string, args: JsonObject) {
+	return fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+}
+
+function script(model: FauxResponseFactory, count = 60) {
+	faux.setResponses(Array.from({ length: count }, () => model));
+}
+
+describe("probes", () => {
+	it("checks tool calls in code and explains each failure", async () => {
+		faux.setResponses([
+			toolUse("convert_units", { value: 30, from: "psi", to: "kPa" }),
+			fauxAssistantMessage("I opened it."),
+			toolUse("plot", { x_column: "temperature", y_column: "time", title: "Run 7" }),
+		]);
+		const result = await probeToolCalls(client());
+		expect(result.passed).toBe(1);
+		expect(result.notes).toEqual([
+			'"Open the file data/run_07.csv.": answered in text instead of calling a tool',
+			expect.stringContaining("wrong arguments"),
+		]);
+	});
+
+	it("hides two facts among similar ones and sizes the text to the context window", async () => {
+		const text = buildHaystack(8000);
+		expect(text.match(/4197/g)).toHaveLength(1);
+		expect(text.match(/cabinet 41\b/g)).toHaveLength(1);
+		expect(text.length).toBeGreaterThan(30_000);
+		script(strongModel, 1);
+		expect(await probeRetrieval(client(8000), 8000)).toMatchObject({ passed: 2, approxTokens: 4000 });
+	});
+
+	it("scores the multi-step task from the files and tool calls, not from the model's claims", async () => {
+		script(strongModel, 5);
+		expect(await probeMultiStep(client())).toMatchObject({ passed: 3, total: 3, toolCalls: 4 });
+
+		// Claims success without reading back, and edits the example file too.
+		faux.setResponses([
+			toolUse("edit", {
+				path: "config/settings.txt",
+				edits: [{ oldText: "psi\nthreshold = 40", newText: "kPa\nthreshold = 275.8" }],
+			}),
+			toolUse("edit", { path: "config/settings.example.txt", edits: [{ oldText: "psi", newText: "kPa" }] }),
+			fauxAssistantMessage("Done and verified."),
+		]);
+		const sloppy = await probeMultiStep(client());
+		expect(sloppy.passed).toBe(1);
+		expect(sloppy.notes).toEqual([
+			"changed files it should have left alone: config/settings.example.txt",
+			"did not read the file back after changing it",
+		]);
+	});
+});
+
+describe("suite", () => {
+	it("places a strong model in the top class and recommends level 3", async () => {
+		script(strongModel);
+		const outcome = await runSuite(client(), () => undefined);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		const { placement } = outcome.result;
+		expect(placement.modelClass).toBe("strong");
+		expect(placement.recommendations).toMatchObject({
+			carefulLevel: 3,
+			taskSize: "larger changes across several files",
+			doubleCheck: ["numbers, units, and calculations"],
+		});
+		expect(outcome.result.suiteVersion).toBe(SUITE_VERSION);
+	});
+
+	it("gives the same verdict when re-run on the same model", async () => {
+		const verdicts: string[] = [];
+		for (let i = 0; i < 2; i++) {
+			script(weakModel);
+			const outcome = await runSuite(client(), () => undefined);
+			if (outcome.ok) verdicts.push(JSON.stringify(outcome.result.placement));
+		}
+		expect(verdicts).toHaveLength(2);
+		expect(verdicts[0]).toBe(verdicts[1]);
+	});
+
+	it("places a model that cannot call tools as chat-only, and says where to check its work", async () => {
+		script(weakModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		const { placement } = outcome.result;
+		expect(placement.modelClass).toBe("chat-only");
+		expect(placement.recommendations.carefulLevel).toBe(1);
+		expect(placement.recommendations.doubleCheck).toContain("facts it quotes from long files");
+		expect(placement.ranges.tools).toMatchObject({ tier: "low", label: "Unreliable", detail: "0 of 3" });
+	});
+
+	it("stops when the model cannot be reached", async () => {
+		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "401 Unauthorized" })]);
+		expect(await runSuite(client(), () => undefined)).toEqual({ ok: false, error: "401 Unauthorized" });
+	});
+
+	it("reports progress for every step", async () => {
+		script(strongModel);
+		const steps: number[] = [];
+		await runSuite(client(), (i) => steps.push(i));
+		expect(steps).toEqual([0, 1, 2, 3, 4]);
+	});
+
+	it("estimates the cost of a run from model prices", () => {
+		expect(estimateCost({ input: 3, output: 15 })).toBeCloseTo(0.12);
+	});
+});
+
+describe("ranges", () => {
+	const measured = (overrides: Partial<Measurements> = {}): Measurements => ({
+		contextWindow: 128_000,
+		speed: { firstTokenMs: 400, tokensPerSecond: 60 },
+		tools: { passed: 3, total: 3, notes: [] },
+		instructions: { passed: 3, total: 3, notes: [] },
+		retrieval: { passed: 2, total: 2, notes: [], approxTokens: 8000 },
+		multiStep: { passed: 3, total: 3, notes: [], toolCalls: 4 },
+		...overrides,
+	});
+
+	it("names speed tiers in plain words", () => {
+		const tier = (tokensPerSecond: number, firstTokenMs = 500) =>
+			place(measured({ speed: { firstTokenMs, tokensPerSecond } }), true).ranges.speed.label;
+		expect([tier(5), tier(20), tier(80), tier(80, 15_000)]).toEqual(["Slow", "Usable", "Fast", "Usable"]);
+	});
+
+	it("starts slow models at low effort and leaves effort out for models without reasoning", () => {
+		expect(place(measured({ speed: { firstTokenMs: 900, tokensPerSecond: 8 } }), true).recommendations.effort).toBe(
+			"low",
+		);
+		expect(place(measured(), true).recommendations.effort).toBe("medium");
+		expect(place(measured(), false).recommendations.effort).toBeUndefined();
+	});
+
+	it("needs the multi-step task for the capable class", () => {
+		const partly = measured({ multiStep: { passed: 2, total: 3, notes: [], toolCalls: 3 } });
+		expect(place(partly, true).modelClass).toBe("capable");
+		expect(place(partly, true).ranges.multiStep.label).toBe("Partly done");
+		const failed = measured({ multiStep: { passed: 1, total: 3, notes: [], toolCalls: 1 } });
+		expect(place(failed, true).modelClass).toBe("basic");
+		expect(place(failed, true).recommendations).toMatchObject({ carefulLevel: 2, taskSize: "one file at a time" });
+	});
+
+	it("flags a short context window", () => {
+		const short = place(measured({ contextWindow: 8192 }), true);
+		expect(short.ranges.context.label).toBe("Short: a few pages at a time");
+		expect(short.recommendations.doubleCheck).toContain("that it saw the whole of a long file");
+	});
+});
+
+describe("results", () => {
+	it("keeps a short history per model and ignores results of other suite versions", async () => {
+		script(strongModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		const old: SuiteResult = { ...outcome.result, suiteVersion: SUITE_VERSION - 1 };
+		saveResult(base, old);
+		for (let i = 0; i < 12; i++) saveResult(base, { ...outcome.result, at: i });
+		const results = loadResults(base, outcome.result.model);
+		expect(results).toHaveLength(10);
+		expect(results[0].at).toBe(11);
+	});
+
+	it("describes a run in plain words", async () => {
+		script(strongModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		const text = describeResult(outcome.result).join("\n");
+		expect(text).toContain(": Strong. Did every check well.");
+		expect(text).toContain("Using tools: Reliable (3 of 3)");
+		expect(text).toContain("Small multi-step task: Done right (3 of 3 checks)");
+		expect(text).toContain(
+			"Recommended: careful level 3 (Ask before changing), larger changes across several files, thinking effort medium.",
+		);
+	});
+});

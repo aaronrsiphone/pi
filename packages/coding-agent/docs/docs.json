@@ -44,6 +44,10 @@
               "path": "careful-levels.md"
             },
             {
+              "title": "Know What Your Model Can Do",
+              "path": "model-capability.md"
+            },
+            {
               "title": "Isolate Pi",
               "path": "containerization.md"
             },

@@ -7,6 +7,9 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "../src/core/extensions/index.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
+import type { SuiteOutcome, SuiteResult } from "../src/extensions/capability/index.ts";
+import { place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
+import { saveResult } from "../src/extensions/capability/store.ts";
 import { checkConnection, listModels, mergeProvider, normalizeBaseUrl } from "../src/extensions/onboarding/endpoint.ts";
 import { advance, INITIAL_STATE, type OnboardingState, parseState } from "../src/extensions/onboarding/flow.ts";
 import { createOnboardingExtension } from "../src/extensions/onboarding/index.ts";
@@ -31,6 +34,7 @@ describe("flow", () => {
 	it("walks newcomers through every step", () => {
 		const steps = [
 			{ type: "connected", model: "p/m" },
+			{ type: "probed" },
 			{ type: "answered-experience", experienced: false },
 			{ type: "chose-level" },
 			{ type: "practiced" },
@@ -42,13 +46,14 @@ describe("flow", () => {
 			state = advance(state, event, 1);
 			seen.push(state.step);
 		}
-		expect(seen).toEqual(["connect", "experience", "levels", "practice", "first-task", "done"]);
+		expect(seen).toEqual(["connect", "probe", "experience", "levels", "practice", "first-task", "done"]);
 		expect(state.connectedModel).toBe("p/m");
 	});
 
 	it("gives experienced users the short path", () => {
 		const state = run(
 			{ type: "connected", model: "p/m" },
+			{ type: "probed" },
 			{ type: "answered-experience", experienced: true },
 			{ type: "chose-level" },
 		);
@@ -58,7 +63,7 @@ describe("flow", () => {
 	it("waits for /login and continues when it connects", () => {
 		const waiting = run({ type: "login-started" });
 		expect(waiting.step).toBe("waiting-for-login");
-		expect(advance(waiting, { type: "connected", model: "p/m" }, 1).step).toBe("experience");
+		expect(advance(waiting, { type: "connected", model: "p/m" }, 1).step).toBe("probe");
 	});
 
 	it("ignores answers that do not belong to the current step", () => {
@@ -141,16 +146,29 @@ describe("endpoint", () => {
 
 describe("onboarding extension", () => {
 	it("guides a newcomer from a connected model to a first task", async () => {
-		const h = setup({ model: fakeModel });
-		h.answers.push("Use this model", "No, this is new", "3.", "No", "Continue", "Put the example");
+		const h = setup({ model: fakeModel, measured: "chat-only" });
+		h.answers.push("Use this model", "Continue", "No, this is new", "3.", "No", "Continue", "Put the example");
 		await h.startSession();
 		await h.idle();
 		expect(loadState(h.dir).step).toBe("done");
 		expect(savedMode(h.permissionsDir)).toBe(3);
 		expect(h.busEvents).toEqual([MODE_CHANGED_EVENT]);
-		expect(h.prompts[3]).toContain("Practice");
-		expect(h.prompts[3]).toContain("deletes results/old-run.csv");
+		expect(h.prompts[1]).toContain("Here is what pi measured");
+		// The probe found a chat-only model, so level 1 is recommended instead of the usual 2.
+		expect(h.select.mock.calls[3][1]).toContain("1. Only what I share (recommended to start)");
+		expect(h.prompts[3]).toContain("Start at level 1");
+		expect(h.prompts[4]).toContain("Practice");
+		expect(h.prompts[4]).toContain("deletes results/old-run.csv");
 		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(3).example);
+	});
+
+	it("continues setup when the model cannot be measured", async () => {
+		const h = setup({ model: fakeModel, measured: "error" });
+		h.answers.push("Use this model", "Continue", "<dismiss>");
+		await h.startSession();
+		await h.idle();
+		expect(h.prompts[1]).toContain("could not measure the model (timeout)");
+		expect(loadState(h.dir).step).toBe("experience");
 	});
 
 	it("shows experienced users the levels and settings, then stops", async () => {
@@ -229,6 +247,29 @@ describe("onboarding extension", () => {
 
 const fakeModel = { provider: "office", id: "m1", name: "Model One" } as Model<Api>;
 
+/** A probe result for fakeModel from a model that answers tool requests in text. */
+function chatOnlyResult(): SuiteResult {
+	const score = (passed: number, total: number) => ({ passed, total, notes: [] });
+	const measurements = {
+		contextWindow: 32_000,
+		speed: { firstTokenMs: 800, tokensPerSecond: 25 },
+		tools: score(0, 3),
+		instructions: score(2, 3),
+		retrieval: { ...score(1, 2), approxTokens: 8000 },
+		multiStep: { ...score(0, 3), toolCalls: 0 },
+	};
+	return {
+		suiteVersion: SUITE_VERSION,
+		model: "office/m1",
+		modelName: "Model One",
+		thinkingLevel: "off",
+		at: 0,
+		durationMs: 1000,
+		measurements,
+		placement: place(measurements, false),
+	};
+}
+
 function serve(handler: Parameters<typeof createServer>[1]): Promise<Server> {
 	return new Promise((resolve) => {
 		const server = createServer(handler);
@@ -236,8 +277,9 @@ function serve(handler: Parameters<typeof createServer>[1]): Promise<Server> {
 	});
 }
 
-function setup(options: { model?: Model<Api>; mode?: "tui" | "print" }) {
+function setup(options: { model?: Model<Api>; mode?: "tui" | "print"; measured?: "chat-only" | "error" }) {
 	const dir = join(base, "onboarding");
+	const capabilityDir = join(base, "capability");
 	const permissionsDir = join(base, "permissions");
 	const modelsPath = join(base, "models.json");
 	const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
@@ -264,7 +306,14 @@ function setup(options: { model?: Model<Api>; mode?: "tui" | "print" }) {
 		setModel,
 		events: { emit: (channel: string) => busEvents.push(channel), on: () => () => undefined },
 	} as unknown as ExtensionAPI;
-	createOnboardingExtension(api, { dir, permissionsStateDir: permissionsDir, modelsPath });
+	const measure = async (): Promise<SuiteOutcome | undefined> => {
+		if (options.measured === undefined) return undefined;
+		if (options.measured === "error") return { ok: false, error: "timeout" };
+		const result = chatOnlyResult();
+		saveResult(capabilityDir, result);
+		return { ok: true, result };
+	};
+	createOnboardingExtension(api, { dir, permissionsStateDir: permissionsDir, modelsPath, capabilityDir, measure });
 
 	const select = vi.fn(async (title: string, opts: string[]) => {
 		prompts.push(title);

@@ -2,16 +2,17 @@
  * The onboarding steps and how answers move between them.
  *
  * Pure and deterministic: pi decides what comes next from the saved state and the user's answer,
- * never from the model. The UI for each step lives in connect.ts and walkthrough.ts.
+ * never from the model. The UI for each step lives in connect.ts, measure.ts, and walkthrough.ts.
  *
- *   connect ──► experience ──► levels ──► practice ──► first-task ──► done
- *      │                         ▲   └──(experienced)──────────────────┘
- *      └─► waiting-for-login ────┘ (after /login selects a model)
+ *   connect ──► probe ──► experience ──► levels ──► practice ──► first-task ──► done
+ *      │          ▲                       └──(experienced)──────────────────┘
+ *      └─► waiting-for-login (until /login selects a model)
  */
 
 export type Step =
 	| "connect"
 	| "waiting-for-login"
+	| "probe"
 	| "experience"
 	| "levels"
 	| "practice"
@@ -32,6 +33,7 @@ export interface OnboardingState {
 export type FlowEvent =
 	| { type: "connected"; model: string }
 	| { type: "login-started" }
+	| { type: "probed" }
 	| { type: "answered-experience"; experienced: boolean }
 	| { type: "chose-level" }
 	| { type: "practiced" }
@@ -62,9 +64,11 @@ export function advance(state: OnboardingState, event: FlowEvent, now: number): 
 			return { ...INITIAL_STATE, updatedAt: now };
 		case "connected":
 			if (state.step !== "connect" && state.step !== "waiting-for-login") return state;
-			return next({ step: "experience", connectedModel: event.model });
+			return next({ step: "probe", connectedModel: event.model });
 		case "login-started":
 			return state.step === "connect" ? next({ step: "waiting-for-login" }) : state;
+		case "probed":
+			return state.step === "probe" ? next({ step: "experience" }) : state;
 		case "answered-experience":
 			return state.step === "experience" ? next({ step: "levels", experienced: event.experienced }) : state;
 		case "chose-level":
@@ -85,6 +89,7 @@ export function parseState(raw: unknown): OnboardingState {
 	const steps: readonly Step[] = [
 		"connect",
 		"waiting-for-login",
+		"probe",
 		"experience",
 		"levels",
 		"practice",

@@ -17,6 +17,8 @@ export interface LevelDeps {
 	levelsAvailable: boolean;
 	/** Save the level and apply it to this session. */
 	chooseMode(mode: PermissionMode): void;
+	/** The level the probe results recommend for this model, if it was measured. */
+	modelLevel: CarefulLevel | undefined;
 }
 
 const NEW_TO_AGENTS = "No, this is new to me";
@@ -32,7 +34,8 @@ export async function runExperience(ctx: ExtensionContext): Promise<FlowEvent | 
 	return { type: "answered-experience", experienced: choice === USED_AGENTS };
 }
 
-const RECOMMENDED: CarefulLevel = 2;
+// Newcomers start here even with a strong model; a weaker model lowers it.
+const NEWCOMER_LEVEL: CarefulLevel = 2;
 
 /** Explain the careful levels and save the one the user picks. */
 export async function runLevels(
@@ -44,12 +47,15 @@ export async function runLevels(
 		ctx.ui.notify("Another permission extension is installed, so pi's careful levels are off.", "info");
 		return { type: "chose-level" };
 	}
+	const recommended = experienced
+		? (deps.modelLevel ?? NEWCOMER_LEVEL)
+		: (Math.min(NEWCOMER_LEVEL, deps.modelLevel ?? NEWCOMER_LEVEL) as CarefulLevel);
 	const intro = experienced
 		? "Pick how careful pi should be. Change it any time with /careful; /permissions has rules that learn what you allow."
-		: "Before pi starts, decide what it may do to your files. You can change this any time with /careful.\nNew to agents? Start at level 2 and move up when you trust the results.";
+		: `Before pi starts, decide what it may do to your files. You can change this any time with /careful.\nNew to agents? Start at level ${recommended} and move up when you trust the results.`;
 	const lines = LEVELS.map((l) => `${l.level}. ${l.label}: ${l.summary}`);
 	const options = LEVELS.map(
-		(l) => `${l.level}. ${l.label}${l.level === RECOMMENDED ? " (recommended to start)" : ""}`,
+		(l) => `${l.level}. ${l.label}${l.level === recommended ? " (recommended to start)" : ""}`,
 	);
 	const choice = await ctx.ui.select(`How careful should pi be?\n\n${intro}\n\n${lines.join("\n")}`, options);
 	if (choice === undefined) return undefined;

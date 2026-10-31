@@ -51,6 +51,6 @@ Careful levels guard against mistakes and over-eager models. They are not a sand
 
 ## Run setup again
 
-`/onboarding` runs first-start setup again: connect a model, pick a level, and try a practice question. `/onboarding skip` turns it off. Setup can be paused with Escape and continues where it stopped.
+`/onboarding` runs first-start setup again: connect a model, measure it (see [Know What Your Model Can Do](model-capability.md)), pick a level, and try a practice question. `/onboarding skip` turns it off. Setup can be paused with Escape and continues where it stopped.
 
 Setup can connect to an address you were given, such as a company gateway or a local server: it adds the endpoint to [`models.json`](models.md#configure-a-compatible-endpoint) and checks the connection with one short request. For a provider account, it opens `/login`.

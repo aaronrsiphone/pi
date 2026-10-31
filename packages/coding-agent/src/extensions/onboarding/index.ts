@@ -1,18 +1,22 @@
 /**
- * Guided onboarding: connect a model, then learn the careful levels and try a first task.
+ * Guided onboarding: connect a model, measure it, then learn the careful levels and try a first task.
  *
- * Pi drives every step in code (flow.ts); the model is used only for the connection check. Setup
- * starts once on the first interactive start, can be paused with Escape, resumes where it stopped,
- * and runs again with /onboarding. One answer ("I have used an agent") takes the short path.
+ * Pi drives every step in code (flow.ts); the model only answers the connection check and the
+ * capability probes, which pi grades. Setup starts once on the first interactive start, can be
+ * paused with Escape, resumes where it stopped, and runs again with /onboarding. One answer
+ * ("I have used an agent") takes the short path.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModelsPath } from "../../config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
+import { measureModel, type SuiteOutcome } from "../capability/index.ts";
+import { defaultCapabilityDir, loadResults } from "../capability/store.ts";
 import { MODE_CHANGED_EVENT, savedMode, saveMode } from "../permissions/index.ts";
 import { DEFAULT_MODE } from "../permissions/levels.ts";
 import { runConnect, runWaitingForLogin } from "./connect.ts";
 import { advance, type FlowEvent, isFinished, type OnboardingState } from "./flow.ts";
+import { runProbe } from "./measure.ts";
 import { defaultOnboardingDir, loadState, saveState } from "./state.ts";
 import { runExperience, runFirstTask, runLevels, runPractice } from "./walkthrough.ts";
 
@@ -23,6 +27,10 @@ export interface OnboardingOptions {
 	permissionsStateDir?: string;
 	/** models.json for endpoints added during setup. */
 	modelsPath?: string;
+	/** Where probe results are saved. Defaults to ~/.pi/agent/capability. */
+	capabilityDir?: string;
+	/** Measures the connected model. Defaults to the capability probes (`measureModel`). */
+	measure?: (ctx: ExtensionContext) => Promise<SuiteOutcome | undefined>;
 }
 
 /** Register /onboarding and start setup on the first interactive start. */
@@ -63,6 +71,8 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 				return runConnect(ctx, connectDeps);
 			case "waiting-for-login":
 				return runWaitingForLogin(ctx, connectDeps);
+			case "probe":
+				return runProbe(ctx, options.measure ?? ((c) => measureModel(c, pi, options.capabilityDir)));
 			case "experience":
 				return runExperience(ctx);
 			case "levels":
@@ -72,6 +82,10 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 						saveMode(mode, options.permissionsStateDir);
 						pi.events.emit(MODE_CHANGED_EVENT, undefined);
 					},
+					modelLevel: state.connectedModel
+						? loadResults(options.capabilityDir ?? defaultCapabilityDir(), state.connectedModel)[0]?.placement
+								.recommendations.carefulLevel
+						: undefined,
 				});
 			case "practice":
 				return runPractice(ctx);
