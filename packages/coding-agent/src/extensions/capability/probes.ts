@@ -230,11 +230,22 @@ export async function probeRetrieval(client: ProbeClient, contextWindow: number)
 	return { passed: 2 - notes.length, total: 2, notes, approxTokens };
 }
 
+/** A line placed in the log, `at` a fraction of the way through. */
+export interface HaystackNote {
+	at: number;
+	line: string;
+}
+
+const BASIC_NOTES: HaystackNote[] = [
+	{ at: 0.35, line: "Note: the calibration code for sensor B7 is 4197." },
+	{ at: 0.8, line: "Note: the spare pressure gauge is stored in cabinet 41." },
+];
+
 /**
  * A deterministic lab log of about `approxTokens` tokens (4 characters each), with distractors
- * that look like the two facts, and the facts at 35% and 80% of the way through.
+ * that look like the facts, and the facts (`notes`) placed in it.
  */
-export function buildHaystack(approxTokens: number): string {
+export function buildHaystack(approxTokens: number, notes: readonly HaystackNote[] = BASIC_NOTES): string {
 	let seed = 7;
 	const next = () => {
 		seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -250,21 +261,28 @@ export function buildHaystack(approxTokens: number): string {
 				? `Day ${i}: calibration code for sensor ${sensor} is ${distractorCode(next())}.`
 				: i % 7 === 0
 					? `Day ${i}: the backup thermometer was moved to cabinet ${10 + (next() % 30)}.`
-					: `Day ${i}: run ${100 + i} at ${(20 + (next() % 150) / 10).toFixed(1)} C, pressure ${(next() % 900) / 10} kPa, sensor ${sensor} nominal.`;
+					: i % 11 === 0
+						? `Day ${i}: the relief valve on rig ${RIGS[next() % RIGS.length]} was set to ${200 + (next() % 100)} kPa.`
+						: `Day ${i}: run ${100 + i} at ${(20 + (next() % 150) / 10).toFixed(1)} C, pressure ${(next() % 900) / 10} kPa, sensor ${sensor} nominal.`;
 		lines.push(line);
 		chars += line.length + 1;
 	}
-	lines.splice(Math.floor(lines.length * 0.35), 0, "Note: the calibration code for sensor B7 is 4197.");
-	lines.splice(Math.floor(lines.length * 0.8), 0, "Note: the spare pressure gauge is stored in cabinet 41.");
+	for (const note of notes) lines.splice(Math.floor(lines.length * note.at), 0, note.line);
 	return lines.join("\n");
 }
 
-// Distractor codes never equal the real one, so finding 4197 means finding the right line.
+// Rig C, whose valve setting is a fact, never appears among the distractors.
+const RIGS = ["A", "B", "D"];
+
+// Distractor codes never equal a real one, so finding a code means finding the right line.
+const REAL_CODES = new Set([4197, 5821, 6033]);
+
 function distractorCode(random: number): number {
 	const code = 1000 + (random % 8999);
-	return code === 4197 ? 4198 : code;
+	return REAL_CODES.has(code) ? code + 1 : code;
 }
 
-function userOnly(text: string): Context {
+/** A request with one user message. */
+export function userOnly(text: string): Context {
 	return { messages: [{ role: "user", content: text, timestamp: 0 }] };
 }

@@ -53,9 +53,11 @@ const lastUserText = (context: Parameters<FauxResponseFactory>[0]): string => {
 const countToolResults = (context: Parameters<FauxResponseFactory>[0]) =>
 	context.messages.filter((m) => m.role === "toolResult").length;
 
-/** A model that answers every probe correctly. */
-const strongModel: FauxResponseFactory = (context) => {
+/** A model that answers every probe correctly, the harder tier included. */
+const advancedModel: FauxResponseFactory = (context) => {
 	const text = lastUserText(context);
+	const hard = hardAnswers(text);
+	if (hard) return hard;
 	if (getCurrentTools(context.messages).some((t) => t.name === "convert_units")) {
 		if (text.includes("psi to kPa")) return toolUse("convert_units", { value: 30, from: "psi", to: "kPa" });
 		if (text.includes("Plot")) return toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" });
@@ -87,6 +89,32 @@ const strongModel: FauxResponseFactory = (context) => {
 	if (text.includes("YES or NO")) return fauxAssistantMessage("NO");
 	if (text.includes("calibration code for sensor B7")) return fauxAssistantMessage("1. 4197\n2. Cabinet 41");
 	return fauxAssistantMessage("OK");
+};
+
+/** Right answers to the harder tier. */
+function hardAnswers(text: string) {
+	if (text.includes("sensor K3")) return fauxAssistantMessage("1. 6033\n2. 5821\n3. 312 kPa");
+	if (text.includes("trapezoidal")) return fauxAssistantMessage("LINE: 12\nThe trapezoid is not halved.");
+	if (text.includes("PSI_TO_KPA")) return fauxAssistantMessage("LINE: 17\nThe values are already in kPa.");
+	if (text.includes("bank_angle_deg")) {
+		return fauxAssistantMessage(
+			'{"bank_angle_deg": 80.4, "turn_rate_rad_s": 0.232, "t180_s": 12.83, "range_accel_m_s2": -8.9, "missile_accel_m_s2": 129.6, "turn_rate_change_rad_s2": 0.00186}',
+		);
+	}
+	return undefined;
+}
+
+/** Passes every basic probe but stumbles on the harder tier: misses the bugs, uses constant speed. */
+const strongModel: FauxResponseFactory = (...args) => {
+	const text = lastUserText(args[0]);
+	if (text.includes("sensor K3")) return fauxAssistantMessage("1. 5821\n2. 5821\n3. 312 kPa");
+	if (text.includes("LINE:")) return fauxAssistantMessage("LINE: 4\nThe header row is skipped.");
+	if (text.includes("bank_angle_deg")) {
+		return fauxAssistantMessage(
+			'{"bank_angle_deg": 80.4, "turn_rate_rad_s": 0.232, "t180_s": 13.53, "range_accel_m_s2": 24.3, "missile_accel_m_s2": 129.6, "turn_rate_change_rad_s2": 0}',
+		);
+	}
+	return advancedModel(...args);
 };
 
 /** A small model: chats fine, answers tool requests in text, and does not finish the task. */
@@ -156,19 +184,65 @@ describe("probes", () => {
 });
 
 describe("suite", () => {
-	it("places a strong model in the top class and recommends level 3", async () => {
-		script(strongModel);
+	it("places a model that passes the harder tier in the top class and recommends level 3", async () => {
+		script(advancedModel);
 		const outcome = await runSuite(client(), () => undefined);
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		const { placement } = outcome.result;
-		expect(placement.modelClass).toBe("strong");
+		expect(placement.modelClass).toBe("advanced");
 		expect(placement.recommendations).toMatchObject({
 			carefulLevel: 3,
 			taskSize: "larger changes across several files",
 			doubleCheck: ["numbers, units, and calculations"],
 		});
 		expect(outcome.result.suiteVersion).toBe(SUITE_VERSION);
+	});
+
+	it("tells a model that passes the basics but not the harder tier apart, and says what to check", async () => {
+		script(strongModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		const { placement, measurements } = outcome.result;
+		expect(placement.modelClass).toBe("strong");
+		expect(measurements.hard?.reasoning).toEqual({
+			passed: 3,
+			total: 6,
+			notes: [
+				"t180_s: 13.53, expected 12.83",
+				"range_accel_m_s2: 24.3, expected -8.92",
+				"turn_rate_change_rad_s2: 0, expected 0.001857",
+			],
+		});
+		expect(placement.ranges.bugFinding).toMatchObject({ tier: "low", detail: "0 of 2" });
+		expect(placement.recommendations.doubleCheck).toEqual([
+			"numbers, units, and calculations",
+			"every step of multi-part calculations",
+			"code it reviews: it can miss subtle bugs",
+			"facts from very long files, and whether a later note replaced them",
+		]);
+	});
+
+	it("runs the harder tier only for models that pass every basic probe", async () => {
+		script(weakModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		expect(outcome.result.measurements.hard).toBeUndefined();
+		expect(outcome.result.placement.hardRun).toBe(false);
+		expect(describeResult(outcome.result).join("\n")).not.toContain("Finding a bug");
+	});
+
+	it("skips the very long text when the context window cannot hold it", async () => {
+		script(advancedModel);
+		const outcome = await runSuite(client(32_000), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		expect(outcome.result.measurements.hard?.longRetrieval).toBeUndefined();
+		expect(outcome.result.placement.ranges.longRetrieval).toMatchObject({
+			label: "Not run",
+			detail: "the context window is too short",
+		});
+		// A skipped probe does not cost the class.
+		expect(outcome.result.placement.modelClass).toBe("advanced");
 	});
 
 	it("gives the same verdict when re-run on the same model", async () => {
@@ -213,14 +287,14 @@ describe("suite", () => {
 	});
 
 	it("reports progress for every step", async () => {
-		script(strongModel);
+		script(advancedModel);
 		const steps: number[] = [];
 		await runSuite(client(), (i) => steps.push(i));
-		expect(steps).toEqual([0, 1, 2, 3, 4]);
+		expect(steps).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 	});
 
 	it("estimates the cost of a run from model prices", () => {
-		expect(estimateCost({ input: 3, output: 15 })).toBeCloseTo(0.12);
+		expect(estimateCost({ input: 3, output: 15 })).toBeCloseTo(0.33);
 	});
 });
 
@@ -232,6 +306,7 @@ describe("ranges", () => {
 		instructions: { passed: 3, total: 3, notes: [] },
 		retrieval: { passed: 2, total: 2, notes: [], approxTokens: 8000 },
 		multiStep: { passed: 3, total: 3, notes: [], toolCalls: 4 },
+		hard: undefined,
 		...overrides,
 	});
 
@@ -279,13 +354,15 @@ describe("results", () => {
 	});
 
 	it("describes a run in plain words", async () => {
-		script(strongModel);
+		script(advancedModel);
 		const outcome = await runSuite(client(), () => undefined);
 		if (!outcome.ok) throw new Error(outcome.error);
 		const text = describeResult(outcome.result).join("\n");
-		expect(text).toContain(": Strong. Did every check well.");
+		expect(text).toContain(": Advanced. Passed the basic and the harder checks");
 		expect(text).toContain("Using tools: Reliable (3 of 3)");
 		expect(text).toContain("Small multi-step task: Done right (3 of 3 checks)");
+		expect(text).toContain("Facts in a very long text: Reliable (3 of 3 in ~30k tokens)");
+		expect(text).toContain("An engineering calculation: Reliable (6 of 6)");
 		expect(text).toContain(
 			"Recommended: careful level 3 (Ask before changing), larger changes across several files, thinking effort medium.",
 		);
@@ -300,6 +377,7 @@ describe("expectations card", () => {
 		instructions: { passed: 2, total: 3, notes: [] },
 		retrieval: { passed: 2, total: 2, notes: [], approxTokens: 8000 },
 		multiStep: { passed: 1, total: 3, notes: [], toolCalls: 2 },
+		hard: undefined,
 	};
 	const basic: SuiteResult = {
 		suiteVersion: SUITE_VERSION,

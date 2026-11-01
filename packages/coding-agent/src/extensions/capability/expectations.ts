@@ -7,7 +7,7 @@
  */
 
 import { type CarefulLevel, levelLabel } from "../careful/levels.ts";
-import { CLASS_DESCRIPTIONS, DIMENSION_NAMES, type Dimension } from "./ranges.ts";
+import { CLASS_DESCRIPTIONS, DIMENSION_NAMES, shownDimensions } from "./ranges.ts";
 import type { SuiteResult } from "./suite.ts";
 
 /** Event-bus channel: the card is being built; add a section. Payload: `ExpectationsCollectEvent`. */
@@ -39,8 +39,6 @@ export interface CardInput {
 	currentEffort: string;
 }
 
-const ORDER: Dimension[] = ["speed", "context", "tools", "instructions", "retrieval", "multiStep"];
-
 /** The card as titled sections of text lines. */
 export function buildCard(input: CardInput): ExpectationsSection[] {
 	const { result } = input;
@@ -55,14 +53,15 @@ export function buildCard(input: CardInput): ExpectationsSection[] {
 		];
 	}
 	const { ranges, modelClass, recommendations } = result.placement;
+	const dimensions = shownDimensions(result.placement);
 	const cls = CLASS_DESCRIPTIONS[modelClass];
-	const strong = ORDER.filter((d) => ranges[d].tier === "high").map((d) => DIMENSION_NAMES[d].toLowerCase());
+	const strong = dimensions.filter((d) => ranges[d].tier === "high").map((d) => DIMENSION_NAMES[d].toLowerCase());
 	return [
 		{
 			title: `What to expect from ${input.modelName}: ${cls.label}`,
 			lines: [
 				cls.summary,
-				...ORDER.map((d) => {
+				...dimensions.map((d) => {
 					const range = ranges[d];
 					return `  ${DIMENSION_NAMES[d]}: ${range.label}${range.detail ? ` (${range.detail})` : ""}`;
 				}),

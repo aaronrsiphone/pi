@@ -317,6 +317,7 @@ function chatOnlyResult(): SuiteResult {
 		instructions: score(2, 3),
 		retrieval: { ...score(1, 2), approxTokens: 8000 },
 		multiStep: { ...score(0, 3), toolCalls: 0 },
+		hard: undefined,
 	};
 	return {
 		suiteVersion: SUITE_VERSION,

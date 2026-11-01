@@ -6,9 +6,10 @@
  */
 
 import { type ProbeClient, ProviderUnavailableError } from "./client.ts";
+import { HARD_STEPS, probeHard } from "./hard-probes.ts";
 import { probeMultiStep } from "./multistep.ts";
 import { probeInstructions, probeRetrieval, probeSpeed, probeToolCalls } from "./probes.ts";
-import { type Measurements, type Placement, place, SUITE_VERSION } from "./ranges.ts";
+import { type Measurements, type Placement, passedBasics, place, SUITE_VERSION } from "./ranges.ts";
 
 export interface SuiteResult {
 	suiteVersion: number;
@@ -24,14 +25,16 @@ export interface SuiteResult {
 
 export type SuiteOutcome = { ok: true; result: SuiteResult } | { ok: false; error: string };
 
-/** Names of the steps, in run order, for progress display. */
-export const SUITE_STEPS = [
+const BASIC_STEPS = [
 	"Speed",
 	"Using tools",
 	"Following instructions",
 	"Finding facts in long text",
 	"A small multi-step task",
 ] as const;
+
+/** Names of the steps, in run order, for progress display. The harder steps run only after every basic probe passed. */
+export const SUITE_STEPS = [...BASIC_STEPS, ...HARD_STEPS] as const;
 
 /** Run the suite. Stops early only when the model or its server cannot be reached reliably. */
 export async function runSuite(client: ProbeClient, onStep: (index: number) => void): Promise<SuiteOutcome> {
@@ -59,14 +62,10 @@ async function measure(client: ProbeClient, onStep: (index: number) => void): Pr
 	const retrieval = await probeRetrieval(client, client.model.contextWindow);
 	onStep(4);
 	const multiStep = await probeMultiStep(client);
-	const measurements: Measurements = {
-		contextWindow: client.model.contextWindow,
-		speed,
-		tools,
-		instructions,
-		retrieval,
-		multiStep,
-	};
+	const basics = { tools, instructions, retrieval, multiStep };
+	// Only a model that passed everything has more to show; the rest keep the short suite.
+	const hard = passedBasics(basics) ? await probeHard(client, (i) => onStep(BASIC_STEPS.length + i)) : undefined;
+	const measurements: Measurements = { contextWindow: client.model.contextWindow, speed, ...basics, hard };
 	return {
 		ok: true,
 		result: {
@@ -82,11 +81,12 @@ async function measure(client: ProbeClient, onStep: (index: number) => void): Pr
 	};
 }
 
-// Estimated from the suite's requests: the retrieval text and the agent loop's repeated context dominate.
-const ESTIMATED_INPUT_TOKENS = 25_000;
-const ESTIMATED_OUTPUT_TOKENS = 3_000;
+// Estimated for a run with the harder tier: the two long logs and the agent loop's context dominate
+// the input, and reasoning on the calculation the output.
+const ESTIMATED_INPUT_TOKENS = 60_000;
+const ESTIMATED_OUTPUT_TOKENS = 10_000;
 
-/** Rough cost of one run in dollars, from the model's per-million-token prices. */
+/** Rough cost of one run in dollars, from the model's per-million-token prices, at most. */
 export function estimateCost(cost: { input: number; output: number }): number {
 	return (ESTIMATED_INPUT_TOKENS * cost.input + ESTIMATED_OUTPUT_TOKENS * cost.output) / 1_000_000;
 }

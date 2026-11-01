@@ -1,5 +1,6 @@
 /**
- * Capability probes: measure the connected model in about a minute and place it in ranges.
+ * Capability probes: measure the connected model in about a minute, or two to three minutes for a
+ * model good enough for the harder tier, and place it in ranges.
  *
  * `/probe` runs the suite on the current model; `/expectations` shows what to expect from it.
  * Results are saved per model (store.ts). The card is built when it is shown, from the latest probe
@@ -40,13 +41,13 @@ export async function measureModel(
 		const dollars = estimateCost(model.cost);
 		const ok = await ctx.ui.confirm(
 			"Measure this model?",
-			`Pi sends about 20 requests to ${name} to see what it can do. At its prices that costs about $${dollars < 0.01 ? "0.01" : dollars.toFixed(2)}.`,
+			`Pi sends about 20 to 25 requests to ${name} to see what it can do. At its prices that costs at most about $${dollars < 0.01 ? "0.01" : dollars.toFixed(2)}.`,
 		);
 		if (!ok) return undefined;
 	}
 	const show = (current: number) =>
 		ctx.ui.setWidget(WIDGET_KEY, [
-			`Checking what ${name} can do. This takes about a minute.`,
+			`Checking what ${name} can do. This takes about a minute, and a few more if it passes every basic check.`,
 			...SUITE_STEPS.map((step, i) => `  ${i < current ? "done" : i === current ? " now" : "    "}  ${step}`),
 		]);
 	try {
@@ -98,7 +99,7 @@ export function createCapabilityExtension(pi: ExtensionAPI, options: { dir?: str
 	}
 
 	pi.registerCommand("probe", {
-		description: "Measure what the connected model can do (about a minute) and recommend settings",
+		description: "Measure what the connected model can do (one to three minutes) and recommend settings",
 		handler: async (_args, ctx) => {
 			if (!ctx.model) {
 				ctx.ui.notify("No model is connected. Run /onboarding or /login first.", "warning");

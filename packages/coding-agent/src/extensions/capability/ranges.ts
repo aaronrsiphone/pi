@@ -11,11 +11,12 @@
  */
 
 import type { CarefulLevel } from "../careful/levels.ts";
+import type { HardMeasurements } from "./hard-probes.ts";
 import type { MultiStepResult } from "./multistep.ts";
 import type { RetrievalResult, ScoreResult, SpeedResult } from "./probes.ts";
 
 /** Bump when probes or boundaries change, so results from different suites are never compared. */
-export const SUITE_VERSION = 2;
+export const SUITE_VERSION = 3;
 
 export interface Measurements {
 	/** Declared by provider metadata or models.json; pi cannot tell a default from a real value. */
@@ -25,6 +26,8 @@ export interface Measurements {
 	instructions: ScoreResult;
 	retrieval: RetrievalResult;
 	multiStep: MultiStepResult;
+	/** The harder tier; undefined when the model did not pass every basic probe, so it was not run. */
+	hard: HardMeasurements | undefined;
 }
 
 export type Tier = "low" | "mid" | "high" | "unknown";
@@ -37,7 +40,16 @@ export interface Range {
 	detail: string;
 }
 
-export type Dimension = "speed" | "context" | "tools" | "instructions" | "retrieval" | "multiStep";
+export type Dimension =
+	| "speed"
+	| "context"
+	| "tools"
+	| "instructions"
+	| "retrieval"
+	| "multiStep"
+	| "longRetrieval"
+	| "bugFinding"
+	| "reasoning";
 
 export const DIMENSION_NAMES: Record<Dimension, string> = {
 	speed: "Speed",
@@ -46,9 +58,30 @@ export const DIMENSION_NAMES: Record<Dimension, string> = {
 	instructions: "Following instructions",
 	retrieval: "Finding facts in long text",
 	multiStep: "Small multi-step task",
+	longRetrieval: "Facts in a very long text",
+	bugFinding: "Finding a bug",
+	reasoning: "An engineering calculation",
 };
 
-export type ModelClass = "chat-only" | "basic" | "capable" | "strong";
+/** Dimensions measured for every model, in display order. */
+export const BASIC_DIMENSIONS: readonly Dimension[] = [
+	"speed",
+	"context",
+	"tools",
+	"instructions",
+	"retrieval",
+	"multiStep",
+];
+
+/** Dimensions of the harder tier, measured only for models that pass every basic probe. */
+export const HARD_DIMENSIONS: readonly Dimension[] = ["longRetrieval", "bugFinding", "reasoning"];
+
+/** The dimensions worth showing for a placement: the harder tier only when it ran. */
+export function shownDimensions(placement: Placement): Dimension[] {
+	return placement.hardRun ? [...BASIC_DIMENSIONS, ...HARD_DIMENSIONS] : [...BASIC_DIMENSIONS];
+}
+
+export type ModelClass = "chat-only" | "basic" | "capable" | "strong" | "advanced";
 
 export const CLASS_DESCRIPTIONS: Record<ModelClass, { label: string; summary: string }> = {
 	"chat-only": {
@@ -59,7 +92,12 @@ export const CLASS_DESCRIPTIONS: Record<ModelClass, { label: string; summary: st
 	capable: { label: "Capable", summary: "Handles small multi-step tasks. Check the results." },
 	strong: {
 		label: "Strong",
-		summary: "Did every check well. Your own benchmark shows how far that goes on your work.",
+		summary: "Passed every basic check, but not all the harder ones. Check longer or trickier work closely.",
+	},
+	advanced: {
+		label: "Advanced",
+		summary:
+			"Passed the basic and the harder checks: very long text, finding bugs, multi-part calculations. Your own benchmark shows how far that goes on your work.",
 	},
 };
 
@@ -74,6 +112,8 @@ export interface Recommendations {
 
 export interface Placement {
 	ranges: Record<Dimension, Range>;
+	/** Whether the harder tier ran. */
+	hardRun: boolean;
 	modelClass: ModelClass;
 	recommendations: Recommendations;
 }
@@ -90,9 +130,27 @@ export function place(m: Measurements, reasoning: boolean): Placement {
 			detail: `${m.retrieval.passed} of 2 in ~${kilo(m.retrieval.approxTokens)} tokens`,
 		},
 		multiStep: taskRange(m.multiStep),
+		longRetrieval: m.hard?.longRetrieval
+			? {
+					...fractionRange(m.hard.longRetrieval),
+					detail: `${m.hard.longRetrieval.passed} of 3 in ~${kilo(m.hard.longRetrieval.approxTokens)} tokens`,
+				}
+			: notRun(m.hard ? "the context window is too short" : ""),
+		bugFinding: m.hard ? fractionRange(m.hard.bugFinding) : notRun(""),
+		reasoning: m.hard ? fractionRange(m.hard.reasoning) : notRun(""),
 	};
-	const modelClass = classify(m);
-	return { ranges, modelClass, recommendations: recommend(m, ranges, modelClass, reasoning) };
+	const modelClass = classify(m, ranges);
+	return {
+		ranges,
+		hardRun: m.hard !== undefined,
+		modelClass,
+		recommendations: recommend(m, ranges, modelClass, reasoning),
+	};
+}
+
+/** Whether every basic probe passed, the condition for running the harder tier. */
+export function passedBasics(m: Omit<Measurements, "hard" | "contextWindow" | "speed">): boolean {
+	return [m.tools, m.instructions, m.retrieval, m.multiStep].every((s) => s.passed === s.total);
 }
 
 // Below ~12 tokens/s a reply arrives slower than people read; above ~40 it feels instant.
@@ -128,6 +186,18 @@ function scoreRange(score: ScoreResult): Range {
 	return { tier: "low", label: "Unreliable", detail };
 }
 
+// Harder probes have more cases, so half right is "usually", not "unreliable".
+function fractionRange(score: ScoreResult): Range {
+	const detail = `${score.passed} of ${score.total}`;
+	if (score.passed === score.total) return { tier: "high", label: "Reliable", detail };
+	if (score.passed * 2 >= score.total) return { tier: "mid", label: "Usually", detail };
+	return { tier: "low", label: "Unreliable", detail };
+}
+
+function notRun(detail: string): Range {
+	return { tier: "unknown", label: "Not run", detail };
+}
+
 const TASK_LABELS: Record<Tier, string> = {
 	high: "Done right",
 	mid: "Partly done",
@@ -140,21 +210,33 @@ function taskRange(task: MultiStepResult): Range {
 	return { tier, label: TASK_LABELS[tier], detail: `${task.passed} of ${task.total} checks` };
 }
 
-function classify(m: Measurements): ModelClass {
+function classify(m: Measurements, ranges: Record<Dimension, Range>): ModelClass {
 	if (m.tools.passed <= 1) return "chat-only";
-	const all = [m.tools, m.instructions, m.retrieval, m.multiStep];
-	if (all.every((s) => s.passed === s.total)) return "strong";
+	if (passedBasics(m)) return isAdvanced(ranges) ? "advanced" : "strong";
 	if (m.multiStep.passed >= 2 && m.tools.passed >= 2 && m.instructions.passed >= 2) return "capable";
 	return "basic";
 }
 
-const LEVEL_FOR_CLASS: Record<ModelClass, CarefulLevel> = { "chat-only": 1, basic: 2, capable: 3, strong: 3 };
+/** Advanced: no harder probe unreliable, and at most one only "usually" right. A skipped probe counts as "usually". */
+function isAdvanced(ranges: Record<Dimension, Range>): boolean {
+	const tiers = HARD_DIMENSIONS.map((d) => (ranges[d].tier === "unknown" ? "mid" : ranges[d].tier));
+	return !tiers.includes("low") && tiers.filter((t) => t === "mid").length <= 1;
+}
+
+const LEVEL_FOR_CLASS: Record<ModelClass, CarefulLevel> = {
+	"chat-only": 1,
+	basic: 2,
+	capable: 3,
+	strong: 3,
+	advanced: 3,
+};
 
 const TASK_SIZE: Record<ModelClass, string> = {
 	"chat-only": "one question about the files you share",
 	basic: "one file at a time",
 	capable: "small multi-step tasks",
-	strong: "larger changes across several files",
+	strong: "multi-step tasks in one or two files",
+	advanced: "larger changes across several files",
 };
 
 function recommend(
@@ -170,6 +252,12 @@ function recommend(
 	if (m.instructions.passed < m.instructions.total)
 		doubleCheck.push("that tables and outputs have the format you asked for");
 	if (ranges.context.tier === "low") doubleCheck.push("that it saw the whole of a long file");
+	if (m.hard?.reasoning && m.hard.reasoning.passed < m.hard.reasoning.total)
+		doubleCheck.push("every step of multi-part calculations");
+	if (m.hard?.bugFinding && m.hard.bugFinding.passed < m.hard.bugFinding.total)
+		doubleCheck.push("code it reviews: it can miss subtle bugs");
+	if (m.hard?.longRetrieval && m.hard.longRetrieval.passed < m.hard.longRetrieval.total)
+		doubleCheck.push("facts from very long files, and whether a later note replaced them");
 	return {
 		carefulLevel: LEVEL_FOR_CLASS[modelClass],
 		// More thinking makes a slow model much slower; start low there and raise it for hard tasks.
