@@ -12,16 +12,17 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ProbeClient } from "../examples/extensions/pi-guided/capability/client.ts";
+import { buildCard } from "../examples/extensions/pi-guided/capability/expectations.ts";
+import { probeReasoning } from "../examples/extensions/pi-guided/capability/hard-probes.ts";
+import { probeMultiStep } from "../examples/extensions/pi-guided/capability/multistep.ts";
+import { buildHaystack, probeRetrieval, probeToolCalls } from "../examples/extensions/pi-guided/capability/probes.ts";
+import { type Measurements, place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
+import { loadResults, saveResult } from "../examples/extensions/pi-guided/capability/store.ts";
+import { estimateCost, runSuite, type SuiteResult } from "../examples/extensions/pi-guided/capability/suite.ts";
+import { describeResult } from "../examples/extensions/pi-guided/capability/summary.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
-import type { ProbeClient } from "../src/extensions/capability/client.ts";
-import { buildCard } from "../src/extensions/capability/expectations.ts";
-import { probeReasoning } from "../src/extensions/capability/hard-probes.ts";
-import { probeMultiStep } from "../src/extensions/capability/multistep.ts";
-import { buildHaystack, probeRetrieval, probeToolCalls } from "../src/extensions/capability/probes.ts";
-import { type Measurements, place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
-import { loadResults, saveResult } from "../src/extensions/capability/store.ts";
-import { estimateCost, runSuite, type SuiteResult } from "../src/extensions/capability/suite.ts";
-import { describeResult } from "../src/extensions/capability/summary.ts";
+import { fauxAgentDir } from "./pi-guided-faux.ts";
 
 let faux: FauxProviderRegistration;
 let base: string;
@@ -42,6 +43,7 @@ function client(contextWindow = 200_000): ProbeClient {
 		thinkingLevel: "off",
 		// The faux provider is reached through pi-ai's dispatcher, as a real provider would be.
 		registry: { streamSimple } as unknown as ModelRegistry,
+		agentDir: fauxAgentDir(faux, base),
 	};
 }
 

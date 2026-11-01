@@ -18,19 +18,16 @@ import {
 	fauxToolCall,
 	getCurrentTools,
 	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI, ExtensionCommandContext } from "../src/core/extensions/index.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
-import { runChecks, snapshot } from "../src/extensions/benchmark/checks.ts";
-import { compareRuns, formatComparison } from "../src/extensions/benchmark/compare.ts";
-import { BENCHMARK_FINISHED_EVENT } from "../src/extensions/benchmark/events.ts";
-import { EXAMPLE_LADDERS } from "../src/extensions/benchmark/examples.ts";
-import { createBenchmarkExtension } from "../src/extensions/benchmark/index.ts";
-import { type Ladder, type LadderTask, parseLadder } from "../src/extensions/benchmark/ladder.ts";
-import { runLadder } from "../src/extensions/benchmark/run-ladder.ts";
-import { type RunnerDeps, runTask } from "../src/extensions/benchmark/runner.ts";
+import { runChecks, snapshot } from "../examples/extensions/pi-guided/benchmark/checks.ts";
+import { compareRuns, formatComparison } from "../examples/extensions/pi-guided/benchmark/compare.ts";
+import { BENCHMARK_FINISHED_EVENT } from "../examples/extensions/pi-guided/benchmark/events.ts";
+import { EXAMPLE_LADDERS } from "../examples/extensions/pi-guided/benchmark/examples.ts";
+import { createBenchmarkExtension } from "../examples/extensions/pi-guided/benchmark/index.ts";
+import { type Ladder, type LadderTask, parseLadder } from "../examples/extensions/pi-guided/benchmark/ladder.ts";
+import { runLadder } from "../examples/extensions/pi-guided/benchmark/run-ladder.ts";
+import { type RunnerDeps, runTask } from "../examples/extensions/pi-guided/benchmark/runner.ts";
 import {
 	appendRun,
 	type LadderEntry,
@@ -38,13 +35,15 @@ import {
 	loadRuns,
 	type RunRecord,
 	saveLadder,
-} from "../src/extensions/benchmark/store.ts";
-import { summarizeForModel } from "../src/extensions/benchmark/summary.ts";
-import { MAX_COPY_BYTES, prepareWorkspace } from "../src/extensions/benchmark/workspace.ts";
+} from "../examples/extensions/pi-guided/benchmark/store.ts";
+import { summarizeForModel } from "../examples/extensions/pi-guided/benchmark/summary.ts";
+import { MAX_COPY_BYTES, prepareWorkspace } from "../examples/extensions/pi-guided/benchmark/workspace.ts";
 import {
 	EXPECTATIONS_COLLECT_EVENT,
 	type ExpectationsCollectEvent,
-} from "../src/extensions/capability/expectations.ts";
+} from "../examples/extensions/pi-guided/capability/expectations.ts";
+import type { ExtensionAPI, ExtensionCommandContext } from "../src/core/extensions/index.ts";
+import { fauxAgentDir } from "./pi-guided-faux.ts";
 
 let faux: FauxProviderRegistration;
 let base: string;
@@ -85,10 +84,8 @@ function deps(overrides: Partial<RunnerDeps> = {}): RunnerDeps {
 	return {
 		model: faux.getModel(),
 		thinkingLevel: "off",
-		// The faux provider is reached through pi-ai's dispatcher, as a real provider would be.
-		registry: { streamSimple } as unknown as ModelRegistry,
-		promptOptions: { cwd: "/ignored" },
 		ui: undefined,
+		agentDir: fauxAgentDir(faux, base),
 		...overrides,
 	};
 }
@@ -378,9 +375,7 @@ describe("running a ladder", () => {
 			cwd: options.cwd ?? folder({}),
 			model: faux.getModel(),
 			thinkingLevel: "off",
-			modelRegistry: { streamSimple },
 			isProjectTrusted: () => options.trusted ?? false,
-			getSystemPromptOptions: () => ({ cwd: "/ignored" }),
 			ui: {
 				select: vi.fn(async (title: string, opts: string[]) => {
 					prompts.push(title);
@@ -421,7 +416,11 @@ describe("running a ladder", () => {
 		]);
 		const { ctx, prompts } = command(["Pass", "Fail"], { cwd: project, trusted: true });
 		const entry: LadderEntry = { key: "project:x", source: "project", path: undefined, ladder };
-		const summary = await runLadder(entry, { levelOverride: undefined, dir }, ctx);
+		const summary = await runLadder(
+			entry,
+			{ levelOverride: undefined, dir, agentDir: fauxAgentDir(faux, base) },
+			ctx,
+		);
 
 		expect(readFileSync(join(project, "data.csv"), "utf-8")).toBe("psi");
 		expect(prompts[0]).toContain("Task 1 of 2: Task one");
@@ -439,7 +438,11 @@ describe("running a ladder", () => {
 		faux.setResponses([fauxAssistantMessage("Done."), fauxAssistantMessage("Done.")]);
 		const { ctx, prompts } = command(["Skip", "<dismiss>"]);
 		const entry: LadderEntry = { key: "project:x", source: "project", path: undefined, ladder };
-		const summary = await runLadder(entry, { levelOverride: undefined, dir: join(base, "h") }, ctx);
+		const summary = await runLadder(
+			entry,
+			{ levelOverride: undefined, dir: join(base, "h"), agentDir: fauxAgentDir(faux, base) },
+			ctx,
+		);
 		expect(prompts[1]).toContain("command checks skipped: this project is not trusted");
 		expect(prompts[1]).not.toContain("exit 0");
 		// Skip records nothing; Escape stops the ladder.
@@ -450,7 +453,11 @@ describe("running a ladder", () => {
 		faux.setResponses([fauxAssistantMessage("a"), fauxAssistantMessage("b")]);
 		const { ctx } = command(["Pass", "Pass"]);
 		const entry: LadderEntry = { key: "personal:x", source: "personal", path: undefined, ladder };
-		const summary = await runLadder(entry, { levelOverride: 2, dir: join(base, "h") }, ctx);
+		const summary = await runLadder(
+			entry,
+			{ levelOverride: 2, dir: join(base, "h"), agentDir: fauxAgentDir(faux, base) },
+			ctx,
+		);
 		expect(summary.runs.map((r) => [r.level, r.levelOverride])).toEqual([
 			[2, 2],
 			[2, 2],

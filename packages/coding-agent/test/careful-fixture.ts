@@ -3,14 +3,14 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { createCarefulExtension } from "../examples/extensions/pi-guided/careful/index.ts";
+import type { CarefulLevel } from "../examples/extensions/pi-guided/careful/levels.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ToolCallEvent,
 	ToolCallEventResult,
 } from "../src/core/extensions/index.ts";
-import { createCarefulExtension } from "../src/extensions/careful/index.ts";
-import type { CarefulLevel } from "../src/extensions/careful/levels.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;

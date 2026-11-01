@@ -2,10 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { BeforeAgentStartEvent, InputEventResult } from "../src/core/extensions/index.ts";
-import { answerToResult, describeCall } from "../src/extensions/careful/approval.ts";
-import { findMentions } from "../src/extensions/careful/attach.ts";
-import { readSavedLevel, writeSavedLevel } from "../src/extensions/careful/config.ts";
+import { answerToResult, describeCall } from "../examples/extensions/pi-guided/careful/approval.ts";
+import { findMentions } from "../examples/extensions/pi-guided/careful/attach.ts";
+import { readSavedLevel, writeSavedLevel } from "../examples/extensions/pi-guided/careful/config.ts";
 import {
 	CAREFUL_CHANGED_EVENT,
 	CAREFUL_SET_EVENT,
@@ -13,7 +12,8 @@ import {
 	decideForLevel,
 	parseLevel,
 	promptSection,
-} from "../src/extensions/careful/levels.ts";
+} from "../examples/extensions/pi-guided/careful/levels.ts";
+import type { BeforeAgentStartEvent, InputEventResult } from "../src/core/extensions/index.ts";
 import { type FixtureOptions, setupCareful } from "./careful-fixture.ts";
 
 let base: string;

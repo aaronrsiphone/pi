@@ -5,18 +5,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BENCHMARK_FINISHED_EVENT } from "../examples/extensions/pi-guided/benchmark/events.ts";
+import type { RunRecord } from "../examples/extensions/pi-guided/benchmark/store.ts";
+import type { SuiteOutcome, SuiteResult } from "../examples/extensions/pi-guided/capability/index.ts";
+import { place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
+import {
+	CAREFUL_CHANGED_EVENT,
+	CAREFUL_SET_EVENT,
+	levelInfo,
+} from "../examples/extensions/pi-guided/careful/levels.ts";
+import { moveUpSuggestion } from "../examples/extensions/pi-guided/onboarding/benchmark.ts";
+import {
+	checkConnection,
+	listModels,
+	mergeProvider,
+	normalizeBaseUrl,
+} from "../examples/extensions/pi-guided/onboarding/endpoint.ts";
+import {
+	advance,
+	INITIAL_STATE,
+	type OnboardingState,
+	parseState,
+} from "../examples/extensions/pi-guided/onboarding/flow.ts";
+import { createOnboardingExtension } from "../examples/extensions/pi-guided/onboarding/index.ts";
+import { loadState } from "../examples/extensions/pi-guided/onboarding/state.ts";
 import type { ExtensionAPI, ExtensionContext } from "../src/core/extensions/index.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
-import { BENCHMARK_FINISHED_EVENT } from "../src/extensions/benchmark/events.ts";
-import type { RunRecord } from "../src/extensions/benchmark/store.ts";
-import type { SuiteOutcome, SuiteResult } from "../src/extensions/capability/index.ts";
-import { place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
-import { CAREFUL_CHANGED_EVENT, CAREFUL_SET_EVENT, levelInfo } from "../src/extensions/careful/levels.ts";
-import { moveUpSuggestion } from "../src/extensions/onboarding/benchmark.ts";
-import { checkConnection, listModels, mergeProvider, normalizeBaseUrl } from "../src/extensions/onboarding/endpoint.ts";
-import { advance, INITIAL_STATE, type OnboardingState, parseState } from "../src/extensions/onboarding/flow.ts";
-import { createOnboardingExtension } from "../src/extensions/onboarding/index.ts";
-import { loadState } from "../src/extensions/onboarding/state.ts";
 
 let base: string;
 
@@ -134,7 +148,7 @@ describe("endpoint", () => {
 		expect(!commented.ok && commented.snippet).toContain('"local"');
 		expect(mergeProvider("{ nope", "local", endpoint)).toMatchObject({
 			ok: false,
-			reason: "models.json is not valid JSON.",
+			reason: "models.json is not plain JSON (it may have comments), and rewriting it would lose them.",
 		});
 	});
 

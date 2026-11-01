@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCarefulExtension } from "../../src/extensions/careful/index.ts";
-import type { CarefulLevel } from "../../src/extensions/careful/levels.ts";
+import { createCarefulExtension } from "../../examples/extensions/pi-guided/careful/index.ts";
+import type { CarefulLevel } from "../../examples/extensions/pi-guided/careful/levels.ts";
 import { createHarness, createTestUiContext, getToolResult, type Harness } from "./harness.ts";
 
 describe("careful levels in a real agent session", () => {

@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { createBenchmarkExtension } from "../../src/extensions/benchmark/index.ts";
-import { loadRuns } from "../../src/extensions/benchmark/store.ts";
+import {
+	type BenchmarkOptions,
+	createBenchmarkExtension,
+} from "../../examples/extensions/pi-guided/benchmark/index.ts";
+import { loadRuns } from "../../examples/extensions/pi-guided/benchmark/store.ts";
+import { fauxAgentDir } from "../pi-guided-faux.ts";
 import { createHarness, createTestUiContext, type Harness } from "./harness.ts";
 
 describe("/bench in a real agent session", () => {
@@ -19,8 +23,11 @@ describe("/bench in a real agent session", () => {
 	it("runs an example ladder as its own agent, records the grades, and leaves the conversation alone", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "benchmark-suite-"));
 		dirs.push(dir);
-		const harness = await createHarness({ extensionFactories: [(pi) => createBenchmarkExtension(pi, { dir })] });
+		const options: BenchmarkOptions = { dir };
+		const harness = await createHarness({ extensionFactories: [(pi) => createBenchmarkExtension(pi, options)] });
 		harnesses.push(harness);
+		// Ladder tasks run as separate sessions, which find the model through models.json.
+		options.agentDir = fauxAgentDir(harness.faux, dir);
 		const dialogs: string[] = [];
 		// Dialogs in order: two grades, the level 3 approval, two grades. A named ladder runs at its own levels.
 		const answers = ["Pass", "Pass", "No", "Fail", "Partial"];
