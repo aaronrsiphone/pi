@@ -11,7 +11,7 @@ The suite takes about a minute on a typical local model and sends about 20 reque
 - its class and its range on each probe
 - what it did well on the probes and on your own [benchmarks](benchmarks.md)
 - where to double-check its work
-- the recommended careful level and thinking effort, next to the current ones
+- your current careful level next to the highest level this model handles, and your thinking effort next to a suggested one
 
 Pi builds the card from the latest probe and benchmark results each time it is shown, and adds it to the chat after every probe. It is shown to you and never sent to the model.
 
@@ -57,7 +57,7 @@ The multi-step probe runs as a separate pi session with Pi's own read, list, edi
 
 ### Overall class
 
-| Class | Rule | Roughly | Recommended level | Task size |
+| Class | Rule | Roughly | Highest careful level | Task size |
 |---|---|---|---|---|
 | Chat only | Using tools: 1 or fewer | Small local models | 1 Only what I share | One question about the files you share |
 | Basic | Below Capable | Small and mid-size local models | 2 Look, don't touch | One file at a time |
@@ -65,7 +65,7 @@ The multi-step probe runs as a separate pi session with Pi's own read, list, edi
 | Strong | Every basic probe passed, but the harder tier did not meet Advanced | Models that slip on long or tricky work | 3 Ask before changing | Multi-step tasks in one or two files |
 | Advanced | Every basic probe passed, no harder probe unreliable, at most one only usually right | Current mid-size open models such as Qwen 3.8 27B and Gemma 4 31B, and above (see [Calibration](#calibration)) | 3 Ask before changing | Larger changes across several files |
 
-New users still start at level 2 or lower; the recommendation applies when they move up. Thinking effort starts at medium, or low for slow models, because more thinking makes a slow model much slower. Pi lists where to double-check its work from the probes it failed, and always includes numbers, units, and calculations.
+The highest careful level is a ceiling, not a starting point: you pick your level, newcomers start at level 2, and Pi only offers to lower it when the model cannot handle it. The suggested thinking effort is medium, or low for slow models, because more thinking makes a slow model much slower. Pi lists where to double-check its work from the probes it failed, and always includes numbers, units, and calculations.
 
 ## Why these boundaries
 

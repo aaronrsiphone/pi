@@ -5,20 +5,22 @@
  * never from the model. The UI for each step lives in connect.ts, measure.ts, walkthrough.ts, and
  * benchmark.ts.
  *
- *   connect ──► probe ──► experience ──► levels ──► practice ──► benchmark ──► expectations ──► first-task ──► done
- *      │                                   └──(experienced)───────────┘   │          ▲           └─(experienced)─┘
- *      └─► waiting-for-login (until /login selects a model)               └─► waiting-for-benchmark (until /bench ends)
+ *   connect ──► experience ──► levels ──► practice ──► probe ──► benchmark ──► expectations ──► first-task ──► done
+ *      │                         └─(experienced)─────┘                │          ▲           └─(experienced)─┘
+ *      └─► waiting-for-login (until /login selects a model)            └─► waiting-for-benchmark (until /bench ends)
+ *
+ * The user picks the careful level from their own experience before the model is measured, so
+ * setup recommends a level once. The probe then only reports the highest level the model handles,
+ * and offers to lower the chosen level when the model cannot handle it.
  */
-
-import { type CarefulLevel, parseLevel } from "../careful/levels.ts";
 
 export type Step =
 	| "connect"
 	| "waiting-for-login"
-	| "probe"
 	| "experience"
 	| "levels"
 	| "practice"
+	| "probe"
 	| "benchmark"
 	| "waiting-for-benchmark"
 	| "expectations"
@@ -29,10 +31,10 @@ export type Step =
 const STEPS: readonly Step[] = [
 	"connect",
 	"waiting-for-login",
-	"probe",
 	"experience",
 	"levels",
 	"practice",
+	"probe",
 	"benchmark",
 	"waiting-for-benchmark",
 	"expectations",
@@ -42,21 +44,19 @@ const STEPS: readonly Step[] = [
 ];
 
 export interface OnboardingState {
-	version: 1;
+	version: 2;
 	step: Step;
 	/** Answer to "Have you used an AI agent before?". */
 	experienced: boolean | undefined;
 	/** `provider/model` the connection check last succeeded with. */
 	connectedModel: string | undefined;
-	/** The careful level the capability probes recommend for that model, if it was measured. */
-	recommendedLevel: CarefulLevel | undefined;
 	updatedAt: number;
 }
 
 export type FlowEvent =
 	| { type: "connected"; model: string }
 	| { type: "login-started" }
-	| { type: "probed"; recommendedLevel?: CarefulLevel }
+	| { type: "probed" }
 	| { type: "answered-experience"; experienced: boolean }
 	| { type: "chose-level" }
 	| { type: "practiced" }
@@ -68,11 +68,10 @@ export type FlowEvent =
 	| { type: "restart" };
 
 export const INITIAL_STATE: OnboardingState = {
-	version: 1,
+	version: 2,
 	step: "connect",
 	experienced: undefined,
 	connectedModel: undefined,
-	recommendedLevel: undefined,
 	updatedAt: 0,
 };
 
@@ -91,19 +90,19 @@ export function advance(state: OnboardingState, event: FlowEvent, now: number): 
 			return { ...INITIAL_STATE, updatedAt: now };
 		case "connected":
 			if (state.step !== "connect" && state.step !== "waiting-for-login") return state;
-			return next({ step: "probe", connectedModel: event.model, recommendedLevel: undefined });
+			return next({ step: "experience", connectedModel: event.model });
 		case "login-started":
 			return state.step === "connect" ? next({ step: "waiting-for-login" }) : state;
 		case "probed":
-			return state.step === "probe" ? next({ step: "experience", recommendedLevel: event.recommendedLevel }) : state;
+			return state.step === "probe" ? next({ step: "benchmark" }) : state;
 		case "answered-experience":
 			return state.step === "experience" ? next({ step: "levels", experienced: event.experienced }) : state;
 		case "chose-level":
 			if (state.step !== "levels") return state;
 			// Experienced users get the levels and settings briefly, without the practice round.
-			return next({ step: state.experienced ? "benchmark" : "practice" });
+			return next({ step: state.experienced ? "probe" : "practice" });
 		case "practiced":
-			return state.step === "practice" ? next({ step: "benchmark" }) : state;
+			return state.step === "practice" ? next({ step: "probe" }) : state;
 		case "benchmark-started":
 			return state.step === "benchmark" ? next({ step: "waiting-for-benchmark" }) : state;
 		case "benchmark-done":
@@ -121,13 +120,12 @@ export function advance(state: OnboardingState, event: FlowEvent, now: number): 
 export function parseState(raw: unknown): OnboardingState {
 	if (typeof raw !== "object" || raw === null) return INITIAL_STATE;
 	const r = raw as Record<string, unknown>;
-	if (r.version !== 1 || !STEPS.includes(r.step as Step)) return INITIAL_STATE;
+	if (r.version !== 2 || !STEPS.includes(r.step as Step)) return INITIAL_STATE;
 	return {
-		version: 1,
+		version: 2,
 		step: r.step as Step,
 		experienced: typeof r.experienced === "boolean" ? r.experienced : undefined,
 		connectedModel: typeof r.connectedModel === "string" ? r.connectedModel : undefined,
-		recommendedLevel: parseLevel(r.recommendedLevel),
 		updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
 	};
 }

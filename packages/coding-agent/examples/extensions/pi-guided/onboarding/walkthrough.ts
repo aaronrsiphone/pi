@@ -13,8 +13,10 @@ import type { FlowEvent } from "./flow.ts";
 export interface LevelDeps {
 	/** Save the level and apply it to this session (through the careful extension). */
 	chooseLevel(level: CarefulLevel): void;
-	/** The level the probe results recommend for this model, if it was measured. */
-	modelLevel: CarefulLevel | undefined;
+	/** The level in effect now. */
+	currentLevel: CarefulLevel | undefined;
+	/** Whether setup measures the model next (the capability extension is on). */
+	measuresModel: boolean;
 }
 
 const NEW_TO_AGENTS = "No, this is new to me";
@@ -30,25 +32,29 @@ export async function runExperience(ctx: ExtensionContext): Promise<FlowEvent | 
 	return { type: "answered-experience", experienced: choice === USED_AGENTS };
 }
 
-// Newcomers start here even with a strong model; a weaker model lowers it.
+// Newcomers start here whatever the model; the probe later lowers it only for a weak model.
 const NEWCOMER_LEVEL = DEFAULT_LEVEL;
 
-/** Explain the careful levels and save the one the user picks. */
+/**
+ * Explain the careful levels and save the one the user picks. This is the only step that recommends
+ * a level, from the user's experience; the probe that follows only reports what the model handles.
+ */
 export async function runLevels(
 	ctx: ExtensionContext,
 	experienced: boolean,
 	deps: LevelDeps,
 ): Promise<FlowEvent | undefined> {
-	const recommended = experienced
-		? (deps.modelLevel ?? NEWCOMER_LEVEL)
-		: (Math.min(NEWCOMER_LEVEL, deps.modelLevel ?? NEWCOMER_LEVEL) as CarefulLevel);
 	const intro = experienced
-		? "Pick how careful pi should be. Change it any time with /careful."
-		: `Before pi starts, decide what it may do to your files. You can change this any time with /careful.\nNew to agents? Start at level ${recommended} and move up when you trust the results.`;
+		? "Pick what pi may do to your files. Pi saves the level and uses it from now on; change it any time with /careful."
+		: `Pick what pi may do to your files. Pi saves the level and uses it from now on; change it any time with /careful.\nNew to agents? Start at level ${NEWCOMER_LEVEL} and move up when you trust the results.${deps.measuresModel ? "\nPi measures the model next and tells you if it cannot handle the level you pick." : ""}`;
 	const lines = LEVELS.map((l) => `${l.level}. ${l.label}: ${l.summary}`);
-	const options = LEVELS.map(
-		(l) => `${l.level}. ${l.label}${l.level === recommended ? " (recommended to start)" : ""}`,
-	);
+	const mark = (level: CarefulLevel) =>
+		!experienced && level === NEWCOMER_LEVEL
+			? " (recommended to start)"
+			: level === deps.currentLevel
+				? " (current)"
+				: "";
+	const options = LEVELS.map((l) => `${l.level}. ${l.label}${mark(l.level)}`);
 	const choice = await ctx.ui.select(`How careful should pi be?\n\n${intro}\n\n${lines.join("\n")}`, options);
 	if (choice === undefined) return undefined;
 	const level = LEVELS[options.indexOf(choice)].level;
@@ -57,7 +63,7 @@ export async function runLevels(
 		? "\n\nSettings: /careful (level), /model, /thinking (effort), /login, /probe (measure the model), /onboarding (run setup again)."
 		: "";
 	ctx.ui.notify(
-		`Careful level ${level}: ${levelInfo(level).label}.\n${levelInfo(level).details.join("\n")}${settings}`,
+		`Saved: careful level ${level}, ${levelInfo(level).label}.\n${levelInfo(level).details.join("\n")}${settings}`,
 		"info",
 	);
 	return { type: "chose-level" };

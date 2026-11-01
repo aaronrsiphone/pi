@@ -2,7 +2,7 @@
  * A probe run in plain words: the class, each range, and the recommended settings.
  */
 
-import { levelInfo } from "../careful/levels.ts";
+import { levelLabel } from "../careful/levels.ts";
 import { CLASS_DESCRIPTIONS, DIMENSION_NAMES, shownDimensions } from "./ranges.ts";
 import type { SuiteResult } from "./suite.ts";
 
@@ -17,8 +17,8 @@ export function describeResult(result: SuiteResult): string[] {
 	}
 	lines.push(
 		"",
-		`Recommended: careful level ${rec.carefulLevel} (${levelInfo(rec.carefulLevel).label}), ${rec.taskSize}` +
-			(rec.effort ? `, thinking effort ${rec.effort}.` : "."),
+		`This model can handle up to careful level ${levelLabel(rec.highestLevel)}. Good task size: ${rec.taskSize}.` +
+			(rec.effort ? ` Suggested thinking effort: ${rec.effort}.` : ""),
 		`Double-check: ${rec.doubleCheck.join("; ")}.`,
 	);
 	return lines;

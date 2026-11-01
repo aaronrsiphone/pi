@@ -103,6 +103,8 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 			setModel: (model: Model<Api>) => pi.setModel(model),
 		};
 		const carefulOn = hasCommand("careful");
+		const chooseLevel = (chosen: CarefulLevel) =>
+			pi.events.emit(CAREFUL_SET_EVENT, { level: chosen } satisfies CarefulSetEvent);
 		switch (state.step) {
 			case "connect":
 				return runConnect(ctx, connectDeps);
@@ -110,14 +112,19 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 				return runWaitingForLogin(ctx, connectDeps);
 			case "probe":
 				if (!options.measure && !hasCommand("probe")) return Promise.resolve({ type: "probed" });
-				return runProbe(ctx, options.measure ?? ((c) => measureModel(c, pi, options.capabilityDir)));
+				return runProbe(ctx, {
+					measure: options.measure ?? ((c) => measureModel(c, pi, options.capabilityDir)),
+					currentLevel: level,
+					chooseLevel,
+				});
 			case "experience":
 				return runExperience(ctx);
 			case "levels":
 				if (!carefulOn) return Promise.resolve({ type: "chose-level" });
 				return runLevels(ctx, state.experienced ?? false, {
-					chooseLevel: (chosen) => pi.events.emit(CAREFUL_SET_EVENT, { level: chosen } satisfies CarefulSetEvent),
-					modelLevel: state.recommendedLevel,
+					chooseLevel,
+					currentLevel: level,
+					measuresModel: options.measure !== undefined || hasCommand("probe"),
 				});
 			case "practice":
 				return carefulOn ? runPractice(ctx) : Promise.resolve({ type: "practiced" });

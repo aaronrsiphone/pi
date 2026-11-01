@@ -102,7 +102,11 @@ export const CLASS_DESCRIPTIONS: Record<ModelClass, { label: string; summary: st
 };
 
 export interface Recommendations {
-	carefulLevel: CarefulLevel;
+	/**
+	 * The highest careful level this model handles reliably: a ceiling, not a starting point. The
+	 * level itself is the user's choice; newcomers start lower.
+	 */
+	highestLevel: CarefulLevel;
 	/** Thinking effort to start with; undefined when the model has no adjustable reasoning. */
 	effort: "low" | "medium" | undefined;
 	taskSize: string;
@@ -259,7 +263,7 @@ function recommend(
 	if (m.hard?.longRetrieval && m.hard.longRetrieval.passed < m.hard.longRetrieval.total)
 		doubleCheck.push("facts from very long files, and whether a later note replaced them");
 	return {
-		carefulLevel: LEVEL_FOR_CLASS[modelClass],
+		highestLevel: LEVEL_FOR_CLASS[modelClass],
 		// More thinking makes a slow model much slower; start low there and raise it for hard tasks.
 		effort: reasoning ? (ranges.speed.tier === "low" ? "low" : "medium") : undefined,
 		taskSize: TASK_SIZE[modelClass],

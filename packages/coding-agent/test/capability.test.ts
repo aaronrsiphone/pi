@@ -195,7 +195,7 @@ describe("suite", () => {
 		const { placement } = outcome.result;
 		expect(placement.modelClass).toBe("advanced");
 		expect(placement.recommendations).toMatchObject({
-			carefulLevel: 3,
+			highestLevel: 3,
 			taskSize: "larger changes across several files",
 			doubleCheck: ["numbers, units, and calculations"],
 		});
@@ -265,7 +265,7 @@ describe("suite", () => {
 		if (!outcome.ok) throw new Error(outcome.error);
 		const { placement } = outcome.result;
 		expect(placement.modelClass).toBe("chat-only");
-		expect(placement.recommendations.carefulLevel).toBe(1);
+		expect(placement.recommendations.highestLevel).toBe(1);
 		expect(placement.recommendations.doubleCheck).toContain("facts it quotes from long files");
 		expect(placement.ranges.tools).toMatchObject({ tier: "low", label: "Unreliable", detail: "0 of 3" });
 	});
@@ -343,7 +343,7 @@ describe("ranges", () => {
 		expect(place(partly, true).ranges.multiStep.label).toBe("Partly done");
 		const failed = measured({ multiStep: { passed: 1, total: 3, notes: [], toolCalls: 1 } });
 		expect(place(failed, true).modelClass).toBe("basic");
-		expect(place(failed, true).recommendations).toMatchObject({ carefulLevel: 2, taskSize: "one file at a time" });
+		expect(place(failed, true).recommendations).toMatchObject({ highestLevel: 2, taskSize: "one file at a time" });
 	});
 
 	it("flags a short context window", () => {
@@ -377,7 +377,7 @@ describe("results", () => {
 		expect(text).toContain("Facts in a very long text: Reliable (3 of 3 in ~30k tokens)");
 		expect(text).toContain("An engineering calculation: Reliable (6 of 6)");
 		expect(text).toContain(
-			"Recommended: careful level 3 (Ask before changing), larger changes across several files, thinking effort medium.",
+			"This model can handle up to careful level 3 Ask before changing. Good task size: larger changes across several files. Suggested thinking effort: medium.",
 		);
 	});
 });
@@ -405,7 +405,7 @@ describe("expectations card", () => {
 	const text = (sections: ReturnType<typeof buildCard>) =>
 		sections.map((s) => `${s.title}\n${s.lines.join("\n")}`).join("\n\n");
 
-	it("shows the class, what went well, where to check, and recommended against current settings", () => {
+	it("shows the class, what went well, where to check, and the current settings next to what the model handles", () => {
 		const card = text(
 			buildCard({
 				modelName: "Model",
@@ -419,8 +419,10 @@ describe("expectations card", () => {
 		expect(card).toContain("Did well: speed, context, using tools, finding facts in long text.");
 		expect(card).toContain("Your benchmarks\n3 of 4 task(s) passed");
 		expect(card).toContain("  - every file it changed");
-		expect(card).toContain("Careful level: now 3 Ask before changing, recommended 2 Look, don't touch.");
-		expect(card).toContain("Thinking effort: now high, recommended medium.");
+		expect(card).toContain(
+			"Careful level: now 3 Ask before changing. This model can handle up to 2 Look, don't touch.",
+		);
+		expect(card).toContain("Thinking effort: now high. Suggested: medium.");
 	});
 
 	it("asks for a probe when the model was not measured, and works without careful levels", () => {

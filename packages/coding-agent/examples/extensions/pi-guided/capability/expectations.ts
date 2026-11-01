@@ -2,7 +2,8 @@
  * The expectations card: what to expect from the connected model, in plain words.
  *
  * It brings together the latest probe result (class, ranges, where to check), what other
- * extensions add (the user's benchmark results), and the recommended against the current settings.
+ * extensions add (the user's benchmark results), and the current settings next to the highest
+ * careful level the model handles.
  * Built on demand, so it always reflects the latest probe and benchmark runs.
  */
 
@@ -85,8 +86,8 @@ function settingsSection(input: CardInput): ExpectationsSection {
 	const rec = input.result?.placement.recommendations;
 	const level = (l: CarefulLevel | undefined) => (l === undefined ? "careful levels off" : levelLabel(l));
 	const lines = [
-		`Careful level: now ${level(input.currentLevel)}${rec ? `, recommended ${levelLabel(rec.carefulLevel)}` : ""}.`,
-		`Thinking effort: now ${input.currentEffort}${rec?.effort ? `, recommended ${rec.effort}` : ""}.`,
+		`Careful level: now ${level(input.currentLevel)}.${rec ? ` This model can handle up to ${levelLabel(rec.highestLevel)}.` : ""}`,
+		`Thinking effort: now ${input.currentEffort}.${rec?.effort ? ` Suggested: ${rec.effort}.` : ""}`,
 		"Change them with /careful and /thinking. New to agents? Stay at level 2 or lower until the answers are right.",
 	];
 	return { title: "Settings", lines };

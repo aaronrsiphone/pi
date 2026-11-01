@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BENCHMARK_FINISHED_EVENT } from "../examples/extensions/pi-guided/benchmark/events.ts";
 import type { RunRecord } from "../examples/extensions/pi-guided/benchmark/store.ts";
 import type { SuiteOutcome, SuiteResult } from "../examples/extensions/pi-guided/capability/index.ts";
-import { place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
+import { type Measurements, place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
 import {
 	CAREFUL_CHANGED_EVENT,
 	CAREFUL_SET_EVENT,
@@ -49,10 +49,10 @@ describe("flow", () => {
 	it("walks newcomers through every step", () => {
 		const steps = [
 			{ type: "connected", model: "p/m" },
-			{ type: "probed" },
 			{ type: "answered-experience", experienced: false },
 			{ type: "chose-level" },
 			{ type: "practiced" },
+			{ type: "probed" },
 			{ type: "benchmark-started" },
 			{ type: "benchmark-done" },
 			{ type: "saw-expectations" },
@@ -66,10 +66,10 @@ describe("flow", () => {
 		}
 		expect(seen).toEqual([
 			"connect",
-			"probe",
 			"experience",
 			"levels",
 			"practice",
+			"probe",
 			"benchmark",
 			"waiting-for-benchmark",
 			"expectations",
@@ -79,18 +79,12 @@ describe("flow", () => {
 		expect(state.connectedModel).toBe("p/m");
 	});
 
-	it("keeps the probe's recommended level", () => {
-		const state = run({ type: "connected", model: "p/m" }, { type: "probed", recommendedLevel: 1 });
-		expect(state.recommendedLevel).toBe(1);
-		expect(parseState(JSON.parse(JSON.stringify(state))).recommendedLevel).toBe(1);
-	});
-
 	it("gives experienced users the short path, with the benchmark optional", () => {
 		const state = run(
 			{ type: "connected", model: "p/m" },
-			{ type: "probed" },
 			{ type: "answered-experience", experienced: true },
 			{ type: "chose-level" },
+			{ type: "probed" },
 		);
 		expect(state.step).toBe("benchmark");
 		expect(advance(advance(state, { type: "benchmark-done" }, 1), { type: "saw-expectations" }, 1).step).toBe("done");
@@ -99,7 +93,7 @@ describe("flow", () => {
 	it("waits for /login and continues when it connects", () => {
 		const waiting = run({ type: "login-started" });
 		expect(waiting.step).toBe("waiting-for-login");
-		expect(advance(waiting, { type: "connected", model: "p/m" }, 1).step).toBe("probe");
+		expect(advance(waiting, { type: "connected", model: "p/m" }, 1).step).toBe("experience");
 	});
 
 	it("ignores answers that do not belong to the current step", () => {
@@ -114,9 +108,10 @@ describe("flow", () => {
 	});
 
 	it("starts over when the saved state is unreadable", () => {
-		expect(parseState({ version: 2, step: "done" })).toEqual(INITIAL_STATE);
-		expect(parseState({ version: 1, step: "nowhere" })).toEqual(INITIAL_STATE);
-		expect(parseState({ version: 1, step: "levels", experienced: true }).experienced).toBe(true);
+		// Version 1 had the probe before the level; its saved steps do not fit the new order.
+		expect(parseState({ version: 1, step: "levels" })).toEqual(INITIAL_STATE);
+		expect(parseState({ version: 2, step: "nowhere" })).toEqual(INITIAL_STATE);
+		expect(parseState({ version: 2, step: "levels", experienced: true }).experienced).toBe(true);
 	});
 });
 
@@ -181,29 +176,45 @@ describe("endpoint", () => {
 });
 
 describe("onboarding extension", () => {
-	it("guides a newcomer from a connected model to a first task", async () => {
-		const h = setup({ model: fakeModel, measured: "chat-only" });
-		h.answers.push("Use this model", "Continue", "No, this is new", "3.", "No", "Continue", "Put the example");
+	it("guides a newcomer: level first, then the model, then a first task", async () => {
+		const h = setup({ model: fakeModel, measured: "strong" });
+		h.answers.push("Use this model", "No, this is new", "2.", "No", "Continue", "Continue", "Put the example");
 		await h.startSession();
 		await h.idle();
 		expect(loadState(h.dir).step).toBe("done");
-		expect(h.levelRequests).toEqual([3]);
-		expect(h.prompts[1]).toContain("Here is what pi measured");
-		// The probe found a chat-only model, so level 1 is recommended instead of the usual 2.
-		expect(h.select.mock.calls[3][1]).toContain("1. Only what I share (recommended to start)");
-		expect(h.prompts[3]).toContain("Start at level 1");
-		expect(h.prompts[4]).toContain("Practice");
-		expect(h.prompts[4]).toContain("Pi wants to run a command\n\nrm results/old-run.csv");
-		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(3).example);
+		expect(h.levelRequests).toEqual([2]);
+		expect(h.prompts[1]).toContain("Have you used an AI agent before?");
+		// The only recommendation comes from the user's experience, before the model is measured.
+		expect(h.prompts[2]).toContain("Pi saves the level and uses it from now on");
+		expect(h.select.mock.calls[2][1]).toContain("2. Look, don't touch (recommended to start)");
+		expect(h.prompts[3]).toContain("Pi wants to run a command\n\nrm results/old-run.csv");
+		// The probe reports what the model handles and changes nothing.
+		expect(h.prompts[5]).toContain("This model can handle up to careful level 3 Ask before changing.");
+		expect(h.prompts[5]).toContain("Nothing was changed: your careful level stays at 2 Look, don't touch.");
+		expect(h.prompts[5]).not.toContain("Recommended");
+		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(2).example);
+	});
+
+	it("offers to lower the level when the model cannot handle it", async () => {
+		const h = setup({ model: fakeModel, measured: "chat-only" });
+		h.answers.push("Use this model", "No, this is new", "2.", "No", "Continue", "Lower", "Put the example");
+		await h.startSession();
+		await h.idle();
+		expect(h.prompts[5]).toContain(
+			"You picked level 2 Look, don't touch, but this model handles only up to level 1 Only what I share.",
+		);
+		expect(h.levelRequests).toEqual([2, 1]);
+		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(1).example);
 	});
 
 	it("continues setup when the model cannot be measured", async () => {
 		const h = setup({ model: fakeModel, measured: "error" });
-		h.answers.push("Use this model", "Continue", "<dismiss>");
+		h.answers.push("Use this model", "Yes", "3.", "Continue");
 		await h.startSession();
 		await h.idle();
-		expect(h.prompts[1]).toContain("could not measure the model (timeout)");
-		expect(loadState(h.dir).step).toBe("experience");
+		expect(h.prompts[3]).toContain("could not measure the model (timeout)");
+		expect(loadState(h.dir).step).toBe("done");
+		expect(h.levelRequests).toEqual([3]);
 	});
 
 	it("shows experienced users the levels and settings, then stops", async () => {
@@ -313,7 +324,7 @@ describe("onboarding extension", () => {
 
 		const done = setup({ model: fakeModel });
 		mkdirSync(done.dir, { recursive: true });
-		writeFileSync(join(done.dir, "state.json"), JSON.stringify({ version: 1, step: "done" }));
+		writeFileSync(join(done.dir, "state.json"), JSON.stringify({ version: 2, step: "done" }));
 		await done.startSession();
 		expect(done.select).not.toHaveBeenCalled();
 	});
@@ -321,17 +332,30 @@ describe("onboarding extension", () => {
 
 const fakeModel = { provider: "office", id: "m1", name: "Model One" } as Model<Api>;
 
-/** A probe result for fakeModel from a model that answers tool requests in text. */
+/** A probe result for fakeModel from a model that answers tool requests in text: handles level 1 at most. */
 function chatOnlyResult(): SuiteResult {
-	const score = (passed: number, total: number) => ({ passed, total, notes: [] });
-	const measurements = {
+	return result({ tools: score(0, 3), instructions: score(2, 3), retrieval: { ...score(1, 2), approxTokens: 8000 } });
+}
+
+/** A probe result from a model that passed every basic probe: handles up to level 3. */
+function strongResult(): SuiteResult {
+	return result({ multiStep: { ...score(3, 3), toolCalls: 4 } });
+}
+
+function score(passed: number, total: number) {
+	return { passed, total, notes: [] };
+}
+
+function result(overrides: Partial<Measurements>): SuiteResult {
+	const measurements: Measurements = {
 		contextWindow: 32_000,
 		speed: { firstTokenMs: 800, tokensPerSecond: 25 },
-		tools: score(0, 3),
-		instructions: score(2, 3),
-		retrieval: { ...score(1, 2), approxTokens: 8000 },
+		tools: score(3, 3),
+		instructions: score(3, 3),
+		retrieval: { ...score(2, 2), approxTokens: 8000 },
 		multiStep: { ...score(0, 3), toolCalls: 0 },
 		hard: undefined,
+		...overrides,
 	};
 	return {
 		suiteVersion: SUITE_VERSION,
@@ -355,7 +379,7 @@ function serve(handler: Parameters<typeof createServer>[1]): Promise<Server> {
 function setup(options: {
 	model?: Model<Api>;
 	mode?: "tui" | "print";
-	measured?: "chat-only" | "error";
+	measured?: "chat-only" | "strong" | "error";
 	careful?: boolean;
 	/** Commands of other extensions that are on. Defaults to careful only. */
 	commands?: string[];
@@ -402,7 +426,7 @@ function setup(options: {
 	const measure = async (): Promise<SuiteOutcome | undefined> => {
 		if (options.measured === undefined) return undefined;
 		if (options.measured === "error") return { ok: false, error: "timeout" };
-		return { ok: true, result: chatOnlyResult() };
+		return { ok: true, result: options.measured === "strong" ? strongResult() : chatOnlyResult() };
 	};
 	createOnboardingExtension(api, { dir, modelsPath, measure });
 	// Stands in for the careful extension: it applies a requested level and reports it.
