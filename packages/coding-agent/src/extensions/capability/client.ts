@@ -5,9 +5,11 @@
  * the same way everywhere. Requests use temperature 0 so re-runs on the same model give the same
  * answers wherever the provider honors it.
  *
- * A provider failure (overloaded, timed out, rate limited) says nothing about the model, so it is
- * retried, and if it persists the whole suite stops with `ProviderUnavailableError` instead of
+ * A provider failure (overloaded, rate limited, connection lost) says nothing about the model, so it
+ * is retried, and if it persists the whole suite stops with `ProviderUnavailableError` instead of
  * scoring the model down. Calibration runs on hosted models showed such failures flipping verdicts.
+ * A request that runs out of time is different: it is not retried, and the probe scores the missing
+ * answer, because a model that thinks for minutes on one answer is slow for interactive work.
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -29,6 +31,8 @@ export interface Reply {
 	totalMs: number;
 	outputTokens: number;
 	inputTokens: number;
+	/** Set when the request ran out of time, e.g. "no answer within 60 s"; the probe scores it as missed. */
+	noAnswer: string | undefined;
 }
 
 /** The provider kept failing, so the model could not be measured. */
@@ -40,10 +44,7 @@ const RETRY_DELAY_MS = 2000;
 
 /** Send one request and measure it, retrying provider failures. Throws `ProviderUnavailableError` when they persist. */
 export async function ask(client: ProbeClient, context: Context, timeoutMs: number): Promise<Reply> {
-	// A stalled request is usually a busy server; three stalls in a row are reported as such.
-	const failure = (reply: Reply) =>
-		reply.message.stopReason === "aborted" ? `no answer within ${timeoutMs / 1000} s` : replyError(reply);
-	return withRetries(() => askOnce(client, context, timeoutMs), failure);
+	return withRetries(() => askOnce(client, context, timeoutMs), replyError);
 }
 
 /** Run `attempt` until `failure` reports nothing, pausing longer each time; throw after the last attempt. */
@@ -91,6 +92,7 @@ async function askOnce(client: ProbeClient, context: Context, timeoutMs: number)
 		totalMs: performance.now() - started,
 		outputTokens: message.usage.output || Math.ceil(text.length / 4),
 		inputTokens: message.usage.input,
+		noAnswer: message.stopReason === "aborted" ? `no answer within ${timeoutMs / 1000} s` : undefined,
 	};
 }
 

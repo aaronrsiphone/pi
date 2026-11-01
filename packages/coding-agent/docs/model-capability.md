@@ -2,7 +2,7 @@
 
 Pi cannot tell you which model is "good". It can measure the connected model on small tasks with known answers, place it in plain-language ranges, and recommend settings from them. Run `/probe` at any time. First-start setup runs it right after connecting.
 
-The suite takes about a minute on a typical local model and sends about 20 requests. For a model that charges per token, Pi shows the estimated cost and asks first. Results are saved per model in `~/.pi/agent/capability/`, with the last 10 runs.
+The suite takes about a minute on a typical local model and sends about 20 requests. A model that passes every basic probe also gets a harder tier of three more requests, which takes one to several more minutes. For a model that charges per token, Pi shows the estimated cost and asks first. Results are saved per model in `~/.pi/agent/capability/`, with the last 10 runs.
 
 ## What to expect
 
@@ -28,6 +28,20 @@ Pi checks every answer in its own code. The model never grades itself.
 | Finding facts in long text | Two facts hidden in a lab log of up to about 8,000 tokens, among similar decoys | Both values appear in the answer |
 | Small multi-step task | In a throwaway folder, find the settings file, convert psi to kPa, leave the example file alone, read the file back | The files on disk and the tool calls Pi recorded |
 
+### Harder tier
+
+Only a model that passes every basic probe gets these. Each is a single request:
+
+| Probe | What it does | Checked by |
+|---|---|---|
+| Facts in a very long text | Three questions about a lab log of about 30,000 tokens, where one sensor's calibration code is replaced later in the log. Skipped when the context window is under 45,000 tokens. | The current code first, the earlier code second, and the valve setting |
+| Finding a bug | Two short analysis scripts that run without errors but give wrong numbers: a trapezoid rule missing its half, and a pressure converted twice | The line number it names |
+| An engineering calculation | A level, decelerating turning fight with a crossing bandit and a missile launch: bank angle, turn rate, 180 degree reversal time, range acceleration, guidance command, turn-rate change | Six numbers, each within 1% of the reference |
+
+The reference answers come from a numerical solution of the problem, checked against a simulation of the engagement.
+
+A request in either tier that gets no answer within its time limit (60 seconds, or 180 seconds in the harder tier) counts as missed and is not retried: a model that thinks for minutes over one answer is slow for interactive work. Provider errors, such as an overloaded server, are retried; if they persist, Pi reports that the server kept failing and scores nothing.
+
 The multi-step probe uses Pi's own read, list, edit, and write tools and its system prompt, with no shell, so nothing outside the throwaway folder can change. Requests use temperature 0 where the provider supports it, so a re-run on the same model gives the same verdict. A model at the edge of a speed range can still move between ranges from one run to the next.
 
 ## Ranges
@@ -39,6 +53,7 @@ The multi-step probe uses Pi's own read, list, edit, and write tools and its sys
 | Using tools, Following instructions | Unreliable: 1 or fewer of 3 | Usually: 2 of 3 | Reliable: 3 of 3 |
 | Finding facts | Unreliable: 0 of 2 | Usually: 1 of 2 | Reliable: 2 of 2 |
 | Multi-step task | Not done: 1 or fewer of 3 checks | Partly done: 2 of 3 | Done right: 3 of 3 |
+| Harder tier, each probe | Unreliable: under half right | Usually: half or more | Reliable: all right |
 
 ### Overall class
 
@@ -47,7 +62,8 @@ The multi-step probe uses Pi's own read, list, edit, and write tools and its sys
 | Chat only | Using tools: 1 or fewer | Small local models | 1 Only what I share | One question about the files you share |
 | Basic | Below Capable | Small and mid-size local models | 2 Look, don't touch | One file at a time |
 | Capable | Multi-step 2 or more, tools 2 or more, instructions 2 or more | Haiku-class | 3 Ask before changing | Small multi-step tasks |
-| Strong | Every probe passed | Haiku-class and above, including many small hosted models (see [Calibration](#calibration)) | 3 Ask before changing | Larger changes across several files |
+| Strong | Every basic probe passed, but the harder tier did not meet Advanced | Models that slip on long or tricky work | 3 Ask before changing | Multi-step tasks in one or two files |
+| Advanced | Every basic probe passed, no harder probe unreliable, at most one only usually right | Current mid-size open models such as Qwen 3.8 27B and Gemma 4 31B, and above (see [Calibration](#calibration)) | 3 Ask before changing | Larger changes across several files |
 
 New users still start at level 2 or lower; the recommendation applies when they move up. Thinking effort starts at medium, or low for slow models, because more thinking makes a slow model much slower. Pi lists where to double-check its work from the probes it failed, and always includes numbers, units, and calculations.
 
@@ -60,20 +76,28 @@ New users still start at level 2 or lower; the recommendation applies when they 
 
 ## Calibration
 
-In October 2026 the suite ran three times at thinking effort medium on seven small and fast models through OpenRouter: `google/gemini-3.8-flash`, `qwen/qwen3.8-flash`, `z-ai/glm-5.3-flash`, `qwen/qwen3.8-27b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, and `nvidia/nemotron-3-super-120b-a12b`.
+In October and November 2026 the suite ran three times at thinking effort medium on seven models through OpenRouter: `google/gemini-3.8-flash`, `qwen/qwen3.8-flash`, `z-ai/glm-5.3-flash`, `qwen/qwen3.8-27b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, and `nvidia/nemotron-3-super-120b-a12b`.
 
-- **Most current small models pass every probe.** Of 21 runs, 15 placed the model in Strong. Five of the other six missed only the plot request (see below); after that fix, every completed run of the tool probe on all seven models scored 3 of 3. The suite separates weak models from capable ones, not one good model from another.
-- **One real flip.** `glm-5.3-flash` missed both facts in one of three runs, which placed it in Capable for that run. A model at the edge of a range can still move between runs.
-- **Speed and time.** Measured speed ranged from 21 to 550 tokens/s. A suite run took 14 to 90 seconds, and 8 minutes once on a free, overloaded endpoint.
+Basic tier:
 
-What the runs changed, in suite version 2:
+- **Most of these models pass every basic probe.** Of 21 runs before the harder tier existed, 15 passed every basic probe. Five of the other six missed only an ambiguous plot request, which was then fixed (see below); afterwards, every completed run of the tool probe on all seven models scored 3 of 3.
+- **One real flip.** `glm-5.3-flash` missed both facts in one of three runs.
 
-- **Provider failures no longer count against the model.** In the first round, two of the three class changes between runs came from the provider (a timeout and "overloaded"). Pi now retries such failures and, if they persist, reports that the server kept failing instead of scoring the model.
-- **The plot request is unambiguous.** It asked to plot "the loaded table" with no table loaded, and naming the file instead made models open it first. Both are sensible answers. The request now follows a turn in which the file was already opened, so reading it again is a mistake.
+Harder tier (13 completed runs; the other eight hit provider errors or the time-limit problem described below):
+
+- **Long retrieval and bug finding did not separate these models.** Every completed run scored 3 of 3 and 2 of 2.
+- **The calculation did, a little.** Eleven runs got all six numbers. `gemma-4-31b-it` once got 2 of 6, with answers 1.5% to 7% off, and `glm-5.3-flash` once answered without the JSON object.
+- **Time.** A full run took 40 seconds to 7 minutes, and nearly 10 minutes on a free, overloaded endpoint.
+
+What the runs changed:
+
+- **Provider failures no longer count against the model.** In the first round, two of the three class changes between runs came from the provider (a timeout and "overloaded").
+- **The plot request is unambiguous.** It asked to plot "the loaded table" with no table loaded, and naming the file instead made models open it first. Both are sensible answers. The request now follows a turn in which the file was already opened.
+- **A slow answer counts as missed instead of a server failure.** In the harder tier, reasoning models sometimes thought for over 3 minutes on the calculation. Those requests were retried as if the server had failed, which made a run take up to 9 minutes and score nothing.
 
 ## Limits
 
-A one-minute suite tells a weak model from a capable one. Most current models pass every probe, so it cannot tell a small hosted model from a Sonnet- or Opus-class model. [Benchmarks](benchmarks.md) you build from tasks you know the answers to show the difference on your own work.
+The suite tells a weak model from a capable one. Current mid-size open models pass even the harder tier, so it cannot rank good models against each other. [Benchmarks](benchmarks.md) you build from tasks you know the answers to show the difference on your own work.
 
 The suite version is saved with each result. When the probes or boundaries change, the version changes and older results are not compared with new ones.
 

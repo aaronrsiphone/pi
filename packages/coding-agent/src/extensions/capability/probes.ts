@@ -30,8 +30,12 @@ export async function probeSpeed(client: ProbeClient): Promise<SpeedResult & { e
 		userOnly("Count from 1 to 60. Write the numbers separated by single spaces and nothing else."),
 		TIMEOUT_MS,
 	);
-	if (reply.firstTokenMs === undefined) {
-		return { firstTokenMs: undefined, tokensPerSecond: undefined, error: "the model sent no answer" };
+	if (reply.noAnswer || reply.firstTokenMs === undefined) {
+		return {
+			firstTokenMs: undefined,
+			tokensPerSecond: undefined,
+			error: reply.noAnswer ?? "the model sent no answer",
+		};
 	}
 	const streamingSeconds = (reply.totalMs - reply.firstTokenMs) / 1000;
 	return {
@@ -110,11 +114,13 @@ export async function probeToolCalls(client: ProbeClient): Promise<ScoreResult> 
 		);
 		const calls = reply.message.content.filter((p) => p.type === "toolCall");
 		const call = calls[0];
-		const failure = !call
-			? "answered in text instead of calling a tool"
-			: call.name !== c.tool
-				? `called ${call.name} instead of ${c.tool}`
-				: argumentsProblem(call, c);
+		const failure = reply.noAnswer
+			? reply.noAnswer
+			: !call
+				? "answered in text instead of calling a tool"
+				: call.name !== c.tool
+					? `called ${call.name} instead of ${c.tool}`
+					: argumentsProblem(call, c);
 		if (failure) notes.push(`"${c.prompt}": ${failure}`);
 	}
 	return { passed: TOOL_CASES.length - notes.length, total: TOOL_CASES.length, notes };
@@ -200,7 +206,7 @@ export async function probeInstructions(client: ProbeClient): Promise<ScoreResul
 	const notes: string[] = [];
 	for (const c of FORMAT_CASES) {
 		const reply = await ask(client, userOnly(c.prompt), TIMEOUT_MS);
-		const failure = c.check(reply.text);
+		const failure = reply.noAnswer ?? c.check(reply.text);
 		if (failure) notes.push(`format ${FORMAT_CASES.indexOf(c) + 1}: ${failure}`);
 	}
 	return { passed: FORMAT_CASES.length - notes.length, total: FORMAT_CASES.length, notes };
@@ -224,6 +230,7 @@ export async function probeRetrieval(client: ProbeClient, contextWindow: number)
 		),
 		TIMEOUT_MS * 2,
 	);
+	if (reply.noAnswer) return { passed: 0, total: 2, notes: [reply.noAnswer], approxTokens };
 	const notes: string[] = [];
 	if (!reply.text.includes("4197")) notes.push("did not find the calibration code for B7");
 	if (!/\b41\b/.test(reply.text)) notes.push("did not find the cabinet of the spare gauge");

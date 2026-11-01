@@ -57,6 +57,7 @@ export async function probeLongRetrieval(
 		),
 		TIMEOUT_MS,
 	);
+	if (reply.noAnswer) return { passed: 0, total: 3, notes: [reply.noAnswer], approxTokens: LONG_TOKENS };
 	const lines = reply.text.split("\n").filter((l) => l.trim() !== "");
 	const notes: string[] = [];
 	if (!lines[0]?.includes("6033")) notes.push("did not give the current code for K3 (6033) first");
@@ -140,7 +141,9 @@ export async function probeBugFinding(client: ProbeClient): Promise<ScoreResult>
 			TIMEOUT_MS,
 		);
 		const named = Number(reply.text.match(/LINE:\s*(\d+)/i)?.[1]);
-		if (named !== c.line) notes.push(`${c.name}: named line ${Number.isNaN(named) ? "none" : named}, not ${c.line}`);
+		if (reply.noAnswer) notes.push(`${c.name}: ${reply.noAnswer}`);
+		else if (named !== c.line)
+			notes.push(`${c.name}: named line ${Number.isNaN(named) ? "none" : named}, not ${c.line}`);
 	}
 	return { passed: BUG_CASES.length - notes.length, total: BUG_CASES.length, notes };
 }
@@ -178,6 +181,7 @@ const TOLERANCE = 0.01;
 export async function probeReasoning(client: ProbeClient): Promise<ScoreResult> {
 	const reply = await ask(client, userOnly(REASONING_PROBLEM), TIMEOUT_MS);
 	const total = Object.keys(REASONING_ANSWERS).length;
+	if (reply.noAnswer) return { passed: 0, total, notes: [reply.noAnswer] };
 	let answers: Record<string, unknown>;
 	try {
 		const body = reply.text.match(/\{[\s\S]*\}/)?.[0] ?? reply.text;

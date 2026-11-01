@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ProbeClient } from "../src/extensions/capability/client.ts";
 import { buildCard } from "../src/extensions/capability/expectations.ts";
+import { probeReasoning } from "../src/extensions/capability/hard-probes.ts";
 import { probeMultiStep } from "../src/extensions/capability/multistep.ts";
 import { buildHaystack, probeRetrieval, probeToolCalls } from "../src/extensions/capability/probes.ts";
 import { type Measurements, place, SUITE_VERSION } from "../src/extensions/capability/ranges.ts";
@@ -284,6 +285,16 @@ describe("suite", () => {
 			toolUse("plot", { x_column: "time", y_column: "temperature", title: "Run 7" }),
 		]);
 		expect(await probeToolCalls(client())).toEqual({ passed: 3, total: 3, notes: [] });
+	});
+
+	// Calibration: reasoning models that thought for minutes were retried as "server failures".
+	it("scores an answer that runs out of time as missed, without retrying it", async () => {
+		faux.setResponses([
+			fauxAssistantMessage("", { stopReason: "aborted", errorMessage: "Request was aborted" }),
+			fauxAssistantMessage("never asked"),
+		]);
+		expect(await probeReasoning(client())).toEqual({ passed: 0, total: 6, notes: ["no answer within 180 s"] });
+		expect(faux.getPendingResponseCount()).toBe(1);
 	});
 
 	it("reports progress for every step", async () => {
