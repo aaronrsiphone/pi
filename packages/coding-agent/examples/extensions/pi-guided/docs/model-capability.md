@@ -4,6 +4,8 @@ Pi cannot tell you which model is "good". It can measure the connected model on 
 
 The suite takes about a minute on a typical local model and sends about 20 requests. A model that passes every basic probe also gets a harder tier of three more requests, which takes one to several more minutes. For a model that charges per token, Pi shows the estimated cost and asks first. Results are saved per model in `~/.pi/agent/capability/`, with the last 10 runs.
 
+A model is measured once per thinking effort. When a saved run matches the model and the current effort, `/probe` offers it instead of measuring again, and guided setup uses it without asking. Run `/probe again` to measure anew, for example after the server behind an address changed its model. A run from an older suite version is not reused.
+
 ## What to expect
 
 `/expectations` shows a card for the connected model:

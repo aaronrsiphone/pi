@@ -15,10 +15,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProbeClient } from "../examples/extensions/pi-guided/capability/client.ts";
 import { buildCard } from "../examples/extensions/pi-guided/capability/expectations.ts";
 import { probeReasoning } from "../examples/extensions/pi-guided/capability/hard-probes.ts";
+import { createCapabilityExtension } from "../examples/extensions/pi-guided/capability/index.ts";
 import { probeMultiStep } from "../examples/extensions/pi-guided/capability/multistep.ts";
 import { buildHaystack, probeRetrieval, probeToolCalls } from "../examples/extensions/pi-guided/capability/probes.ts";
 import { type Measurements, place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
-import { loadResults, saveResult } from "../examples/extensions/pi-guided/capability/store.ts";
+import { loadResults, savedResult, saveResult } from "../examples/extensions/pi-guided/capability/store.ts";
 import { estimateCost, runSuite, type SuiteResult } from "../examples/extensions/pi-guided/capability/suite.ts";
 import { describeResult } from "../examples/extensions/pi-guided/capability/summary.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
@@ -354,6 +355,53 @@ describe("ranges", () => {
 });
 
 describe("results", () => {
+	it("finds a saved run only for the same model and thinking effort", async () => {
+		script(advancedModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		saveResult(base, { ...outcome.result, thinkingLevel: "medium" });
+		expect(savedResult(base, outcome.result.model, "medium")?.thinkingLevel).toBe("medium");
+		expect(savedResult(base, outcome.result.model, "high")).toBeUndefined();
+		expect(savedResult(base, "other/model", "medium")).toBeUndefined();
+	});
+
+	it("/probe shows a saved run instead of measuring again, unless asked to measure again", async () => {
+		script(advancedModel);
+		const outcome = await runSuite(client(), () => undefined);
+		if (!outcome.ok) throw new Error(outcome.error);
+		const model = client().model;
+		saveResult(base, { ...outcome.result, model: `${model.provider}/${model.id}`, thinkingLevel: "off" });
+		const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+		const entries: unknown[] = [];
+		const api = {
+			registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+				commands.set(name, c.handler),
+			registerEntryRenderer: () => undefined,
+			appendEntry: (_type: string, data: unknown) => entries.push(data),
+			getThinkingLevel: () => "off",
+			events: { on: () => () => undefined, emit: () => undefined },
+		} as unknown as Parameters<typeof createCapabilityExtension>[0];
+		createCapabilityExtension(api, { dir: base });
+		const prompts: string[][] = [];
+		const ctx = {
+			model,
+			ui: {
+				select: async (_title: string, options: string[]) => {
+					prompts.push(options);
+					return options[0];
+				},
+				notify: () => undefined,
+			},
+		};
+		// No scripted responses are left: measuring would fail, so the card must come from the saved run.
+		faux.setResponses([]);
+		await commands.get("probe")!("", ctx);
+		expect(prompts[0][0]).toMatch(/^Use the saved result from /);
+		expect(prompts[0][1]).toBe("Measure again (one to three minutes)");
+		expect(entries).toHaveLength(1);
+		expect(loadResults(base, `${model.provider}/${model.id}`)).toHaveLength(1);
+	});
+
 	it("keeps a short history per model and ignores results of other suite versions", async () => {
 		script(strongModel);
 		const outcome = await runSuite(client(), () => undefined);

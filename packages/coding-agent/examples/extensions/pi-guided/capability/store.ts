@@ -37,6 +37,14 @@ export function loadResults(dir: string, model: string): SuiteResult[] {
 	return readFile(fileFor(dir, model)).results.filter((r) => r.suiteVersion === SUITE_VERSION);
 }
 
+/**
+ * The latest saved run for `provider/model` at this thinking effort, so the model need not be
+ * measured again. A different effort or suite version measures differently, so it does not count.
+ */
+export function savedResult(dir: string, model: string, thinkingLevel: string): SuiteResult | undefined {
+	return loadResults(dir, model).find((r) => r.thinkingLevel === thinkingLevel);
+}
+
 function fileFor(dir: string, model: string): string {
 	return join(dir, `${model.replace(/[^A-Za-z0-9._-]+/g, "_")}.json`);
 }

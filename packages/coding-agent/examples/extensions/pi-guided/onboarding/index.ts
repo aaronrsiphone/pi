@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { BENCHMARK_FINISHED_EVENT, type BenchmarkFinishedEvent } from "../benchmark/events.ts";
 import { measureModel, type SuiteOutcome } from "../capability/index.ts";
+import { defaultCapabilityDir, savedResult } from "../capability/store.ts";
 import {
 	CAREFUL_CHANGED_EVENT,
 	CAREFUL_SET_EVENT,
@@ -114,6 +115,14 @@ export function createOnboardingExtension(pi: ExtensionAPI, options: OnboardingO
 				if (!options.measure && !hasCommand("probe")) return Promise.resolve({ type: "probed" });
 				return runProbe(ctx, {
 					measure: options.measure ?? ((c) => measureModel(c, pi, options.capabilityDir)),
+					saved: (c) =>
+						c.model
+							? savedResult(
+									options.capabilityDir ?? defaultCapabilityDir(),
+									`${c.model.provider}/${c.model.id}`,
+									pi.getThinkingLevel(),
+								)
+							: undefined,
 					currentLevel: level,
 					chooseLevel,
 				});

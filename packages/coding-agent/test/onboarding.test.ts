@@ -9,6 +9,7 @@ import { BENCHMARK_FINISHED_EVENT } from "../examples/extensions/pi-guided/bench
 import type { RunRecord } from "../examples/extensions/pi-guided/benchmark/store.ts";
 import type { SuiteOutcome, SuiteResult } from "../examples/extensions/pi-guided/capability/index.ts";
 import { type Measurements, place, SUITE_VERSION } from "../examples/extensions/pi-guided/capability/ranges.ts";
+import { saveResult } from "../examples/extensions/pi-guided/capability/store.ts";
 import {
 	CAREFUL_CHANGED_EVENT,
 	CAREFUL_SET_EVENT,
@@ -193,6 +194,22 @@ describe("onboarding extension", () => {
 		expect(h.prompts[5]).toContain("Nothing was changed: your careful level stays at 2 Look, don't touch.");
 		expect(h.prompts[5]).not.toContain("Recommended");
 		expect(h.setEditorText).toHaveBeenLastCalledWith(levelInfo(2).example);
+	});
+
+	it("reuses a saved probe run for the same model and effort instead of measuring again", async () => {
+		const h = setup({ model: fakeModel, measured: "chat-only" });
+		saveResult(h.capabilityDir, {
+			...strongResult(),
+			model: "office/m1",
+			thinkingLevel: "off",
+			at: Date.UTC(2026, 9, 1),
+		});
+		h.answers.push("Use this model", "Yes", "2.", "Continue");
+		await h.startSession();
+		await h.idle();
+		expect(h.measured).toEqual([]);
+		expect(h.prompts[3]).toContain("so it does not measure it again. Run /probe again to measure anew.");
+		expect(h.prompts[3]).toContain("This model can handle up to careful level 3");
 	});
 
 	it("offers to lower the level when the model cannot handle it", async () => {
@@ -393,6 +410,8 @@ function setup(options: {
 	const prompts: string[] = [];
 	const levelRequests: number[] = [];
 	const bus = new Map<string, ((data: unknown) => void)[]>();
+	const capabilityDir = join(base, "capability");
+	const measured: string[] = [];
 	const commandNames = options.commands ?? (options.careful === false ? [] : ["careful"]);
 	const careful = commandNames.includes("careful");
 	const sent: string[] = [];
@@ -411,6 +430,7 @@ function setup(options: {
 			commands.set(name, command.handler);
 		},
 		getCommands: () => commandNames.map((name) => ({ name })),
+		getThinkingLevel: () => "off",
 		sendUserMessage: (text: string) => sent.push(text),
 		setModel,
 		events: {
@@ -424,11 +444,12 @@ function setup(options: {
 		},
 	} as unknown as ExtensionAPI;
 	const measure = async (): Promise<SuiteOutcome | undefined> => {
+		measured.push("measured");
 		if (options.measured === undefined) return undefined;
 		if (options.measured === "error") return { ok: false, error: "timeout" };
 		return { ok: true, result: options.measured === "strong" ? strongResult() : chatOnlyResult() };
 	};
-	createOnboardingExtension(api, { dir, modelsPath, measure });
+	createOnboardingExtension(api, { dir, modelsPath, measure, capabilityDir });
 	// Stands in for the careful extension: it applies a requested level and reports it.
 	if (careful) {
 		api.events.on(CAREFUL_SET_EVENT, (data) => {
@@ -486,6 +507,8 @@ function setup(options: {
 		prompts,
 		levelRequests,
 		sent,
+		measured,
+		capabilityDir,
 		emitBus: (channel: string, data: unknown) => api.events.emit(channel, data),
 		select,
 		notify,

@@ -17,7 +17,7 @@ import {
 	type ExpectationsCollectEvent,
 	type ExpectationsSection,
 } from "./expectations.ts";
-import { defaultCapabilityDir, loadResults, saveResult } from "./store.ts";
+import { defaultCapabilityDir, loadResults, savedResult, saveResult } from "./store.ts";
 import { estimateCost, runSuite, SUITE_STEPS, type SuiteOutcome } from "./suite.ts";
 
 export type { SuiteOutcome, SuiteResult } from "./suite.ts";
@@ -99,11 +99,28 @@ export function createCapabilityExtension(pi: ExtensionAPI, options: { dir?: str
 	}
 
 	pi.registerCommand("probe", {
-		description: "Measure what the connected model can do (one to three minutes) and recommend settings",
-		handler: async (_args, ctx) => {
-			if (!ctx.model) {
+		description: "Measure what the connected model can do (one to three minutes); `/probe again` measures anew",
+		getArgumentCompletions: (prefix) =>
+			"again".startsWith(prefix.trim()) ? [{ value: "again", label: "again" }] : null,
+		handler: async (args, ctx) => {
+			const model = ctx.model;
+			if (!model) {
 				ctx.ui.notify("No model is connected. Run /onboarding or /login first.", "warning");
 				return;
+			}
+			// A saved run for the same model and effort is reused unless the user asks to measure again.
+			const saved = savedResult(dir, `${model.provider}/${model.id}`, pi.getThinkingLevel());
+			if (saved && args.trim() !== "again") {
+				const reuse = `Use the saved result from ${new Date(saved.at).toLocaleString()}`;
+				const choice = await ctx.ui.select(
+					`${model.name || model.id} was already measured at thinking effort ${saved.thinkingLevel}.`,
+					[reuse, "Measure again (one to three minutes)"],
+				);
+				if (choice === undefined) return;
+				if (choice === reuse) {
+					showCard(ctx);
+					return;
+				}
 			}
 			const outcome = await measureModel(ctx, pi, dir);
 			if (!outcome) return;
