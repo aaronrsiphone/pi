@@ -35,7 +35,7 @@ async function startedWith(options: Omit<FixtureOptions, "base">) {
 async function promptSectionAfterStart(h: Awaited<ReturnType<typeof startedWith>>): Promise<string | undefined> {
 	const event = {
 		type: "before_agent_start",
-		systemPromptOptions: { sections: {} },
+		systemPromptOptions: { sections: {}, promptGuidelines: [] },
 	} as unknown as BeforeAgentStartEvent;
 	await h.emit("before_agent_start", event);
 	return event.systemPromptOptions.sections.careful;

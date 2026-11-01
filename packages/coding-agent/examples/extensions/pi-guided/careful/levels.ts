@@ -119,24 +119,47 @@ export function allowedTools(level: CarefulLevel): readonly string[] | undefined
 	return undefined;
 }
 
+/**
+ * One rule for the top of the system prompt, above any other text about tools. Models trained to
+ * call tools skim past a section at the end; this line states the level where they look first.
+ */
+export function promptRule(level: CarefulLevel): string | undefined {
+	switch (level) {
+		case 1:
+			return "Careful level 1 is on: this session has no tools at all, not even custom ones. Never write a tool call; answer in plain text. See <careful> below.";
+		case 2:
+			return "Careful level 2 is on: you can only read, list, and search files. You cannot change files or run commands. See <careful> below.";
+		case 3:
+			return "Careful level 3 is on: every file change and every command needs the user's approval. See <careful> below.";
+		case 4:
+			return undefined;
+	}
+}
+
+/** Replaces pi's tool list at level 1, whose "(none)" is followed by a hint that custom tools may exist. */
+export const NO_TOOLS_TEXT =
+	"(none)\n\nCareful level 1 is on, so this session has no tools: no read, write, edit, bash, or custom tools. A tool call will fail.";
+
 /** System prompt section telling the model what it can do, so it does not try what it cannot. */
 export function promptSection(level: CarefulLevel): string | undefined {
 	switch (level) {
 		case 1:
 			return [
-				`The user chose careful level 1 (${levelInfo(1).label}). You have no tools: you cannot read, search, change, or run anything.`,
-				"Work only from file contents the user attached in the conversation (shown in <file> blocks).",
-				"If you need another file, ask the user to attach it by typing @ followed by its path.",
+				`The user chose careful level 1 (${levelInfo(1).label}) with /careful. You have no tools: you cannot open, search, change, save, or run anything, and a tool call will fail.`,
+				"Work only from what is in the conversation, including files the user attached (shown in <file> blocks).",
+				"If you need a file, ask the user to attach it by typing @ followed by its path.",
+				"If the user asks you to save, change, or run something, say that you cannot at level 1, put the result in your reply so they can save it themselves, and tell them that /careful 3 lets you do it with their approval.",
+				"Always end your turn with a written answer.",
 			].join("\n");
 		case 2:
 			return [
-				`The user chose careful level 2 (${levelInfo(2).label}). You can read, list, and search files.`,
-				"You cannot create, change, or delete files or run commands; those tools are not available.",
-				"When a task needs changes, write a short numbered plan the user can review, and say they can switch to level 3 with /careful to have you carry it out.",
+				`The user chose careful level 2 (${levelInfo(2).label}) with /careful. You can read, list, and search files with read, grep, find, and ls.`,
+				"You have no other tools: you cannot create, change, or delete files or run commands, and a call to any other tool will fail.",
+				"When a task needs changes or commands, do the reading part, then write a short numbered plan the user can review, and tell them that /careful 3 lets you carry it out with their approval.",
 			].join("\n");
 		case 3:
 			return [
-				`The user chose careful level 3 (${levelInfo(3).label}). You can read, list, and search freely.`,
+				`The user chose careful level 3 (${levelInfo(3).label}) with /careful. You can read, list, and search freely.`,
 				"Every file change and every command needs the user's approval, and they may say no. Use ls, find, and grep to look around instead of shell commands.",
 				"Before such a step, say in one sentence what you are about to do and why. If the user says no, do not retry it; follow their reason or ask.",
 			].join("\n");

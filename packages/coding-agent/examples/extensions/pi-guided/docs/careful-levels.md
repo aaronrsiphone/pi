@@ -15,6 +15,8 @@ Pi starts at level 2 until you pick a level. Move up when Pi's answers are right
 
 At levels 1 and 2, Pi removes the tools it may not use from the model's request and tells the model which ones it has. A weak model therefore does not keep trying a tool and getting refused. If anything calls a removed tool anyway, Pi blocks it. No setting can allow a change at these levels.
 
+Pi tells the model the level in three places in its instructions: the first rule, a section describing the level, and, at level 1, the tool list itself. Models used to having tools otherwise try a tool anyway or end their turn without an answer. Asked to save something at level 1 or 2, the model gives the result in its reply and says that `/careful 3` lets it do the step with your approval. If another extension replaces Pi's instructions wholesale, the level's text is added to the end of them.
+
 At level 1, typing `@` and a file name attaches the file: Pi reads it and adds it to your message. Text files are attached up to 200 KB; images are attached as images.
 
 At level 2, Pi can write a plan you review before switching to level 3 and asking it to carry the plan out.

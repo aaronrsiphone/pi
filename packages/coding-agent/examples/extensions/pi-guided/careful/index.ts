@@ -35,7 +35,9 @@ import {
 	LEVELS,
 	levelInfo,
 	levelLabel,
+	NO_TOOLS_TEXT,
 	parseLevel,
+	promptRule,
 	promptSection,
 } from "./levels.ts";
 
@@ -123,13 +125,32 @@ export function createCarefulExtension(pi: ExtensionAPI, options: CarefulOptions
 		apply(sessionCtx);
 	});
 
+	// Moving to another point in the session tree makes pi restore the tools that branch declared,
+	// which may be another level's. Read that branch's loadout and apply the current level again.
+	pi.on("session_tree", (_event, ctx) => {
+		loadout = restoreLoadout(ctx);
+		apply(ctx);
+	});
+
 	// Other extensions may activate tools at any time; the cap is applied again before every run.
 	pi.on("before_agent_start", (event, ctx) => {
 		const level = currentLevel(ctx);
 		applyLoadout(level);
+		const rule = promptRule(level);
 		const section = promptSection(level);
-		if (section) event.systemPromptOptions.sections[PROMPT_SECTION] = section;
-		else delete event.systemPromptOptions.sections[PROMPT_SECTION];
+		if (!rule || !section) return undefined;
+		const options = event.systemPromptOptions;
+		// An earlier extension replaced the whole prompt, so section edits would not reach the model.
+		if (options.forceSystemPrompt !== undefined) {
+			return {
+				systemPrompt: `${options.forceSystemPrompt}\n\n<${PROMPT_SECTION}>\n${rule}\n${section}\n</${PROMPT_SECTION}>`,
+			};
+		}
+		options.promptGuidelines.unshift(rule);
+		options.sections[PROMPT_SECTION] = section;
+		// Overrides pi's own tool list in place, so the model reads it where it looks for tools.
+		if (level === 1 && !options.customPrompt) options.sections.tools = NO_TOOLS_TEXT;
+		return undefined;
 	});
 
 	pi.on("tool_call", async (event, ctx) => {

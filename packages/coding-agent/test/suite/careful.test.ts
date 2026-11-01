@@ -54,6 +54,79 @@ describe("careful levels in a real agent session", () => {
 		expect(JSON.stringify(getToolResult(harness, "write").content)).toContain("Tool write not found");
 	});
 
+	it("level 1 says so in the tool list and the rules, before any other text about tools", async () => {
+		const harness = await start(1, () => undefined);
+		let systemPrompt = "";
+		harness.setResponses([
+			(context) => {
+				systemPrompt = getCurrentSystemPrompt(context.messages);
+				return fauxAssistantMessage("Here is the poem.");
+			},
+		]);
+
+		await harness.session.prompt("write a poem and save it to disk");
+
+		const tools = systemPrompt.indexOf("<tools>");
+		expect(systemPrompt.slice(tools, systemPrompt.indexOf("</tools>"))).toContain("Careful level 1 is on");
+		expect(systemPrompt).not.toContain("you may have access to other custom tools");
+		expect(systemPrompt).toContain("- Careful level 1 is on");
+		expect(systemPrompt).toContain("/careful 3 lets you do it");
+	});
+
+	it("reaches the model when an earlier extension replaces the whole system prompt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "careful-suite-"));
+		dirs.push(dir);
+		writeFileSync(join(dir, "config.json"), JSON.stringify({ level: 1 }));
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) =>
+					pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\nExecution policy.` })),
+				(pi) => createCarefulExtension(pi, { dir }),
+			],
+		});
+		harnesses.push(harness);
+		let systemPrompt = "";
+		harness.setResponses([
+			(context) => {
+				systemPrompt = getCurrentSystemPrompt(context.messages);
+				return fauxAssistantMessage("ok");
+			},
+		]);
+
+		await harness.session.prompt("hi");
+
+		expect(systemPrompt).toContain("Execution policy.");
+		expect(systemPrompt).toContain("Careful level 1 is on");
+	});
+
+	it("a level chosen after moving back in the session tree takes effect", async () => {
+		const harness = await start(1, () => undefined);
+		harness.setResponses([fauxAssistantMessage("I have no tools.")]);
+		await harness.session.prompt("configure config.toml");
+		await harness.session.prompt("/careful 3");
+		// Going back to before the first message restores the tools that point declared: none.
+		const systemEntry = harness.sessionManager
+			.getEntries()
+			.find((entry) => entry.type === "message" && entry.message.role === "system");
+		await harness.session.navigateTree(systemEntry!.id, { summarize: false });
+		let tools: string[] = [];
+		let systemPrompt = "";
+		harness.setResponses([
+			(context) => {
+				tools = getCurrentTools(context.messages).map((tool) => tool.name);
+				systemPrompt = getCurrentSystemPrompt(context.messages);
+				return fauxAssistantMessage("Reading both files.");
+			},
+		]);
+
+		await harness.session.prompt("configure config.toml");
+
+		expect(tools).toContain("bash");
+		expect(tools).toContain("read");
+		expect(systemPrompt).toContain("careful level 3");
+		expect(systemPrompt).not.toContain("Careful level 1 is on");
+	});
+
 	it("level 3 asks in plain words, and /careful 4 gives the tools back for the next run", async () => {
 		const asked: string[] = [];
 		const harness = await start(3, (title, options) => {
