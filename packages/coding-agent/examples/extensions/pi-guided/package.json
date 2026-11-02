@@ -1,0 +1,17 @@
+{
+	"name": "pi-guided",
+	"private": true,
+	"version": "0.1.0",
+	"description": "Pi extensions for scientists and engineers new to AI agents: careful levels, model probes, benchmarks, and guided setup",
+	"keywords": ["pi-package"],
+	"type": "module",
+	"pi": {
+		"extensions": ["./careful/index.ts", "./capability/index.ts", "./benchmark/index.ts", "./onboarding/index.ts"]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	}
+}
